@@ -1,0 +1,12 @@
+##fileformat=VCFv4.2
+##source=pbsv
+##contig=<ID=chr1,length=248956422>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths (ref, alt)">
+##FILTER=<ID=PASS,Description="">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="">
+##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="">
+##INFO=<ID=END,Number=1,Type=Integer,Description="">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	SAMPLE
+chr1	1000000	pbsv.DEL.1	N	<DEL>	60	PASS	SVTYPE=DEL;SVLEN=-100;END=1000100	GT:AD	0/1:10,8
+chr1	2000000	pbsv.INS.1	N	GATC	60	PASS	SVTYPE=INS;SVLEN=80;END=2000000	GT:AD	0/1:5,15

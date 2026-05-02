@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "molamola"
+description = "Plot Oxford Nanopore variation as self-contained HTML reports."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Martin Haagmans", email = "martinhaagmans84@gmail.com" },
+]
+keywords = [
+    "bioinformatics",
+    "ont",
+    "oxford-nanopore",
+    "long-read",
+    "structural-variants",
+    "compound-het",
+    "phasing",
+    "vcf",
+    "plotting",
+    "cytogenetics",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+requires-python = ">=3.10"
+dynamic = ["version"]
+dependencies = [
+    "matplotlib>=3.6",
+    "numpy>=1.23",
+    "pycirclize>=1.10",
+    # pycirclize transitive deps used directly by molamola for parsing
+    # and table handling:
+    "pandas>=1.5",
+    "biopython>=1.80",
+]
+
+[project.urls]
+Homepage = "https://github.com/martinandclaude/molamola"
+Source = "https://github.com/martinandclaude/molamola"
+Issues = "https://github.com/martinandclaude/molamola/issues"
+Changelog = "https://github.com/martinandclaude/molamola/blob/main/CHANGELOG.md"
+
+[project.scripts]
+molamola = "molamola:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "ruff>=0.4",
+]
+# pyliftover is needed only by scripts/derive_canonical_exons.py for the
+# optional --lift-to <chain> mode. Not pulled by the runtime install.
+derive = [
+    "pyliftover>=0.4",
+]
+
+[tool.setuptools]
+packages = ["molamola"]
+
+[tool.setuptools.dynamic]
+version = { attr = "molamola.__version__" }
+
+[tool.setuptools.package-data]
+molamola = ["data/*.txt.gz", "data/*.tsv.gz", "data/*.tsv.xz", "data/*.png"]

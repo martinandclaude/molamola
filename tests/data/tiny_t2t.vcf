@@ -1,0 +1,20 @@
+##fileformat=VCFv4.2
+##source=Sniffles2_2.7.5
+##contig=<ID=chr1,length=248387328>
+##contig=<ID=chr2,length=242696752>
+##contig=<ID=chr13,length=113566686>
+##contig=<ID=chr21,length=45090682>
+##contig=<ID=chr22,length=51324926>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FILTER=<ID=PASS,Description="">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="">
+##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="">
+##INFO=<ID=END,Number=1,Type=Integer,Description="">
+##INFO=<ID=SUPPORT,Number=1,Type=Integer,Description="">
+##INFO=<ID=COVERAGE,Number=.,Type=Float,Description="">
+##INFO=<ID=VAF,Number=1,Type=Float,Description="">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	SAMPLE
+chr1	1000000	t2t.INS.1	N	GATC	60	PASS	SVTYPE=INS;SVLEN=100;END=1000000;SUPPORT=20;COVERAGE=30,30,30,30,30;VAF=0.500	GT	0/1
+chr1	2000000	t2t.DEL.1	N	<DEL>	60	PASS	SVTYPE=DEL;SVLEN=-150;END=2000150;SUPPORT=18;COVERAGE=30,30,15,30,30;VAF=0.450	GT	0/1
+chr21	5000000	t2t.BND.1	N	N[chr22:10000000[	60	PASS	SVTYPE=BND;SUPPORT=12;COVERAGE=30,30,30,30,30;VAF=0.500	GT	0/1
+chr22	10000000	t2t.BND.2	N	]chr21:5000000]N	60	PASS	SVTYPE=BND;SUPPORT=12;COVERAGE=30,30,30,30,30;VAF=0.500	GT	0/1

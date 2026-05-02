@@ -1,0 +1,14 @@
+##fileformat=VCFv4.2
+##source=cuteSV-2.1.0
+##contig=<ID=chr1,length=248956422>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FILTER=<ID=PASS,Description="">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="">
+##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="">
+##INFO=<ID=END,Number=1,Type=Integer,Description="">
+##INFO=<ID=RE,Number=1,Type=Integer,Description="cuteSV read evidence">
+##INFO=<ID=STRAND,Number=1,Type=String,Description="">
+##INFO=<ID=AF,Number=1,Type=Float,Description="">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	SAMPLE
+chr1	1000000	cuteSV.DEL.1	N	<DEL>	60	PASS	SVTYPE=DEL;SVLEN=-100;END=1000100;RE=10;STRAND=+-;AF=0.5	GT	0/1
+chr1	2000000	cuteSV.INS.1	N	GATC	60	PASS	SVTYPE=INS;SVLEN=80;END=2000000;RE=12;STRAND=+-;AF=0.45	GT	0/1

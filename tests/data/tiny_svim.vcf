@@ -1,0 +1,13 @@
+##fileformat=VCFv4.2
+##source=SVIM-v2.0.0
+##contig=<ID=chr1,length=248956422>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FILTER=<ID=PASS,Description="">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="">
+##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="">
+##INFO=<ID=END,Number=1,Type=Integer,Description="">
+##INFO=<ID=SUPPORT,Number=1,Type=Integer,Description="">
+##INFO=<ID=STD_SPAN,Number=1,Type=Float,Description="">
+##INFO=<ID=STD_POS,Number=1,Type=Float,Description="">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	SAMPLE
+chr1	1000000	svim.DEL.1	N	<DEL>	60	PASS	SVTYPE=DEL;SVLEN=-100;END=1000100;SUPPORT=10;STD_SPAN=2.5;STD_POS=1.0	GT	0/1

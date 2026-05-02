@@ -1,0 +1,14 @@
+##fileformat=VCFv4.2
+##source=NanoVar
+##contig=<ID=chr1,length=248956422>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FILTER=<ID=PASS,Description="">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="">
+##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="">
+##INFO=<ID=END,Number=1,Type=Integer,Description="">
+##INFO=<ID=SR,Number=1,Type=Integer,Description="NanoVar split reads">
+##INFO=<ID=AF,Number=1,Type=Float,Description="">
+##INFO=<ID=BREAKEND_TYPE,Number=1,Type=String,Description="">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	SAMPLE
+chr1	1000000	nanovar.DEL.1	N	<DEL>	60	PASS	SVTYPE=DEL;SVLEN=-100;END=1000100;SR=12;AF=0.4;BREAKEND_TYPE=DEL	GT	0/1
+chr1	2000000	nanovar.INS.1	N	GATC	60	PASS	SVTYPE=INS;SVLEN=80;END=2000000;SR=15;AF=0.5;BREAKEND_TYPE=INS	GT	0/1

@@ -1,0 +1,135 @@
+# Examples
+
+molamola auto-detects the plot type from the VCF header, so the same command shape works for both SV and compound-het VCFs:
+
+```sh
+molamola --vcf path/to/sample.vcf
+open path/to/sample.report.html        # SV mode
+open path/to/sample.compound_het.report.html  # compound-het mode
+```
+
+The HTML report lands next to the input VCF by default. Pass `--out DIR` to send it elsewhere.
+
+## SV / cytogenetics
+
+### Genome-wide view (defaults)
+
+```sh
+molamola --vcf sample.sniffles.vcf
+```
+
+### T2T-CHM13v2.0 reference
+
+```sh
+molamola --vcf sample.t2t.sniffles.vcf --reference t2t
+```
+
+The bundled T2T cytoband (`molamola/data/cytoBand.t2t.txt.gz`) is selected automatically. The acrocentric noise flag flips off for T2T (those p-arms are real sequence on T2T-CHM13v2.0).
+
+### Zoom in on a specific BND endpoint
+
+```sh
+molamola --vcf sample.sniffles.vcf \
+    --focus chr7:57716411 --focus-window 10000
+```
+
+Output filenames get a `.focus_<chr>_<pos>` tag so focused renders don't overwrite genome-wide ones. ISCN labels (e.g. `t(7;17)(q11.23;q12)`) print to stdout for each matched event.
+
+### Filter by ISCN cytoband
+
+```sh
+molamola --vcf sample.sniffles.vcf --focus chr7:q11.23
+```
+
+The second part of `--focus` can be either a position (`chr7:57716411`) or an ISCN cytoband (`chr7:q11.23`). Bands can also be specified as a prefix (`chr1:p36`) to match every sub-band on the chromosome whose name starts with that prefix.
+
+### Override the adaptive coverage threshold
+
+`--cov-ratio` defaults to `auto`, computed as `max(2.0, p99 of the in-sample max-coverage / median-coverage distribution)`. Pass a number (int or float) to fix the threshold instead — useful for cross-sample consistency:
+
+```sh
+molamola --vcf sample.sniffles.vcf --cov-ratio 2.5 --cov-vaf-max 0.45
+```
+
+### Coarser density tracks
+
+```sh
+molamola --vcf sample.sniffles.vcf --bin-size 5000000
+```
+
+5 Mb bins instead of 1 Mb — smoother visual, less detail.
+
+### Run a non-Sniffles2 caller
+
+`--caller auto` (default) detects the caller via INFO-field fingerprinting. Override when the fingerprint is ambiguous (bcftools-merged or re-headered VCFs):
+
+```sh
+molamola --vcf sample.cutesv.vcf --caller cutesv
+```
+
+## Compound-het
+
+### One gene, explicit
+
+```sh
+molamola --vcf sample.phased.vep.vcf.gz --gene NEB
+```
+
+The panel always plots regardless of variant count. If `--gene FOO` lands in a gene with zero phased het variants, the report still gets a placeholder section so multi-gene runs (`--gene A --gene B --gene C`) don't silently lose entries.
+
+### Multi-gene focus
+
+```sh
+molamola --vcf sample.phased.vep.vcf.gz \
+    --gene NEB --gene LDLR --gene CFTR
+```
+
+### Auto-select sweep
+
+Drop `--gene` to let molamola surface candidate genes:
+
+```sh
+molamola --vcf sample.phased.vep.vcf.gz
+```
+
+The HTML splits the result into two clearly-labelled sections:
+
+- **strict** — both variants P/LP or VUS (true compound-het).
+- **extended** — anchor P/LP-or-VUS, partner conflicting / no-ClinVar / P/LP / VUS.
+
+The strict heading is shown even when its subset is empty so the dichotomy is always visible.
+
+Tune via `--min-pair-count N` (raise for stricter sweeps) and `--max-genes N` (default 50). Conflicting+conflicting and no-ClinVar+no-ClinVar pairs are excluded from the sweep — use explicit `--gene` to plot those one-off.
+
+### Override ClinVar with a fresher snapshot
+
+The bundled ClinVar (`molamola/data/clinvar.hg38.tsv.xz`, ~13 MB) is dated; pass a fresher copy with `--clinvar`:
+
+```sh
+# Reduced TSV (smallest)
+molamola --vcf sample.phased.vep.vcf.gz \
+    --clinvar /path/to/clinvar.hg38.tsv.xz
+
+# Or NCBI's raw VCF (190+ MB) — auto-detected by extension
+molamola --vcf sample.phased.vep.vcf.gz \
+    --clinvar /path/to/clinvar.vcf.gz
+```
+
+The release date of whichever file is loaded is logged in the HTML report's run-metadata.
+
+### Override the canonical-exon table
+
+```sh
+molamola --vcf sample.phased.vep.vcf.gz \
+    --canonical-exons /path/to/custom_exons.tsv.gz
+```
+
+Schema: `gene_symbol\tchrom\tstart\tend\tstrand\ttranscript_id\texon_starts\texon_ends` (gzipped TSV; comma-separated exon coords; 0-based half-open).
+
+## Verify a VCF before plotting
+
+```sh
+./summarize_bnds.sh path/to/sample.sniffles.vcf
+```
+
+Reports SV-type counts, BND filter distribution, intra/inter-chromosomal split, and the top 10 BND chromosome pairs.

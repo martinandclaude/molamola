@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+.conda/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+
+# Local-only
+*.local
+
+# Agent / assistant artifacts (defence in depth)
+CLAUDE.md
+.claude/
