@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install ruff
-      - run: ruff check molamola.py tests/
+      - run: ruff check molamola/ tests/
 
   test:
     name: pytest (Python ${{ matrix.python-version }})
