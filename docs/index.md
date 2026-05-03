@@ -30,6 +30,59 @@ The plot type is auto-detected. Output is a single self-contained
 HTML report — figures embedded as base64, no external assets, opens
 offline.
 
+## Preparing a phased VCF for compound-het mode
+
+Compound-het mode needs both phasing (`PS` FORMAT field) and VEP
+annotation (`CSQ` INFO field). A raw phased small-variant VCF —
+e.g. straight Clair3 output — has the first but not the second,
+and molamola will refuse it. Annotate with
+[Ensembl VEP](https://github.com/Ensembl/ensembl-vep) first.
+
+**1. Download the matching VEP cache once** (one-time, ~20 GB),
+on a machine with internet:
+
+```sh
+wget https://ftp.ensembl.org/pub/release-105/variation/indexed_vep_cache/homo_sapiens_vep_105_GRCh38.tar.gz
+```
+
+If your VEP isn't 105, swap `105` for your release number (it
+appears twice in the URL); the cache release must match the VEP
+release exactly. Transfer to wherever you run VEP if that's a
+different machine.
+
+**2. Unpack into a stable cache directory:**
+
+```sh
+mkdir -p VEP_cache && cd VEP_cache
+tar -xzf ../homo_sapiens_vep_105_GRCh38.tar.gz
+# creates VEP_cache/homo_sapiens/105_GRCh38/
+```
+
+**3. Run VEP fully offline**, with `--canonical --symbol --pick`
+so the CSQ shape matches what molamola consumes:
+
+```sh
+vep --input_file sample.phased.vcf \
+    --output_file sample.phased.vep.vcf \
+    --vcf --offline \
+    --cache --dir_cache /path/to/VEP_cache \
+    --assembly GRCh38 \
+    --fasta /path/to/hg38.fa \
+    --canonical --symbol --pick \
+    --force_overwrite
+```
+
+Then `molamola --vcf sample.phased.vep.vcf` picks it up as
+compound-het mode.
+
+**Notes on VEP.** VEP is third-party software (Ensembl); molamola
+does not bundle or wrap it. The cache release and VEP binary
+release must match exactly — a mismatch leads to silent
+mis-annotation rather than a clean error. Compound-het mode reads
+VEP's `Consequence`, `SYMBOL`, and `CANONICAL` fields as-is; any
+quirks of a particular VEP build are inherited. `--pick` reduces
+multi-transcript CSQ entries to one per variant.
+
 ## Documentation
 
 - [CLI reference](CLI.md) — every flag, with defaults and meanings.
