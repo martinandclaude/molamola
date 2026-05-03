@@ -1,3 +1,5 @@
+<p align="center"><img src="header_fish.png" alt="molamola" width="128"></p>
+
 # molamola
 
 A Python plotting tool for Oxford Nanopore variation data.
