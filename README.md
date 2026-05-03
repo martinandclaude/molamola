@@ -28,6 +28,8 @@ pip install -e .[dev]
 pytest -v
 ```
 
+**Documentation:** <https://martinandclaude.github.io/molamola/>
+
 ## Quick start
 
 ```sh
