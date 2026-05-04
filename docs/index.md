@@ -20,10 +20,11 @@ automatically — no flags or subcommands to remember:
 pip install molamola
 ```
 
-Or via conda from the bioconda channel:
+Or via conda — note that both bioconda and conda-forge channels are
+needed (pycirclize lives on conda-forge):
 
 ```sh
-conda install -c bioconda molamola
+conda create -n molamola -c bioconda -c conda-forge molamola
 ```
 
 ## Quick start
