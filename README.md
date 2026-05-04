@@ -19,6 +19,12 @@ Both produce one self-contained HTML report — figures embedded as base64 PNGs,
 pip install molamola
 ```
 
+Or via conda from the bioconda channel:
+
+```sh
+conda install -c bioconda molamola
+```
+
 Or for development from a clone:
 
 ```sh

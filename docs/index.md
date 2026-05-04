@@ -20,6 +20,12 @@ automatically — no flags or subcommands to remember:
 pip install molamola
 ```
 
+Or via conda from the bioconda channel:
+
+```sh
+conda install -c bioconda molamola
+```
+
 ## Quick start
 
 ```sh
