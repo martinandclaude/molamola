@@ -122,6 +122,28 @@ VEP's `Consequence`, `SYMBOL`, and `CANONICAL` fields as-is; any
 quirks of a particular VEP build are inherited. `--pick` reduces
 multi-transcript CSQ entries to one per variant.
 
+## Bundled references
+
+molamola ships its own reference data inside `molamola/data/`:
+
+- `cytoBand.txt.gz` (hg38) and `cytoBand.t2t.txt.gz`
+  (T2T-CHM13v2.0) — UCSC cytoband annotations, used for the SV
+  ideogram tracks.
+- `canonical_exons.hg38.tsv.gz` — MANE Select v1.x canonical
+  transcripts and exon coordinates, used for the compound-het
+  exon track.
+- `clinvar.hg38.tsv.xz` — molamola's reduced ClinVar TSV
+  (chrom, pos, ref, alt, significance bucket; xz-compressed).
+  The release date of the bundled snapshot is logged in each
+  HTML report's run-metadata.
+
+Bundled-only by design: molamola does not auto-download or look up
+online. Override with `--clinvar PATH` or
+`--canonical-exons PATH` if you want a fresher snapshot. The two
+reduced TSVs are reproducibly regeneratable from public sources
+via `scripts/derive_canonical_exons.py` and
+`scripts/derive_clinvar_for_molamola.py` in the repo.
+
 ## Documentation
 
 - [CLI reference](CLI.md) — every flag, with defaults and meanings.
