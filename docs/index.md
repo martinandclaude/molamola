@@ -37,6 +37,38 @@ The plot type is auto-detected. Output is a single self-contained
 HTML report — figures embedded as base64, no external assets, opens
 offline.
 
+## Example output
+
+Figures below come from running molamola's SV mode on sample MH001
+(ONT LSK114 library prep, aligned-read N50 10.4 kb, median autosomal
+coverage 54x). The HTML report embeds both plots back-to-back; shown
+separately here for clarity.
+
+### Circos plot
+
+![SV circos plot](example_sv_circos.png)
+
+22 autosomes plus X and Y arranged around the disc, with greyscale
+ISCN cytobands on the rim. Each ribbon across the disc is a BND
+(translocation or large rearrangement); ribbon colour encodes VAF
+(purple = low → yellow = high, plasma colormap). At-a-glance view
+for inter-chromosomal events.
+
+### Linear genome map
+
+![SV linear plot](example_sv_linear.png)
+
+One row per chromosome (chr1 at top, chrY at bottom). Cytobands
+embedded inside each chromosome track. Above each track sit four
+1-Mb-bin density strips — INS = blue, DEL = red, DUP = green,
+INV = purple — with alpha encoding per-bin event count. BND arcs
+hang above the tracks, colour-encoded by VAF as in the circos.
+Better for per-chromosome detail and density hotspots.
+
+### Compound-het example
+
+Pending.
+
 ## Preparing a phased VCF for compound-het mode
 
 Compound-het mode needs both phasing (`PS` FORMAT field) and VEP
