@@ -33,7 +33,7 @@ rather than silently producing a default plot.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 import argparse
 import base64
@@ -3099,6 +3099,11 @@ def _add_common_args(p) -> None:
                         "VCF filename hints at a reference different from "
                         "--reference (e.g. 'sample.t2t.vcf' with "
                         "--reference hg38).")
+    p.add_argument("--png", action="store_true",
+                   help="alongside the HTML report, also write each "
+                        "embedded figure as a standalone PNG file in "
+                        "the same output directory (useful for MultiQC "
+                        "and other pipeline-report embeds).")
 
 
 def _add_sv_args(p) -> None:
@@ -3426,6 +3431,14 @@ def plot_main(args: argparse.Namespace) -> int:
         caller_basis=basis,
     )
     print(f"wrote {out_html}")
+    if args.png:
+        base = out_html.stem
+        circos_path = out_dir / f"{base}.circos.png"
+        sv_map_path = out_dir / f"{base}.sv_map.png"
+        circos_path.write_bytes(circos_buf.getvalue())
+        sv_map_path.write_bytes(sv_map_buf.getvalue())
+        print(f"wrote {circos_path}")
+        print(f"wrote {sv_map_path}")
     return 0
 
 
@@ -3630,6 +3643,12 @@ def compound_het_main(args: argparse.Namespace) -> int:
         is_auto_select=not args.gene,
     )
     print(f"wrote {out_html}")
+    if args.png and gene_panels:
+        base = out_html.stem
+        for gene, png, _stats in gene_panels:
+            png_path = out_dir / f"{base}.{gene.symbol}.png"
+            png_path.write_bytes(png)
+            print(f"wrote {png_path}")
     return 0
 
 

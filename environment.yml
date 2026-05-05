@@ -1,18 +1,20 @@
-# Conda environment for molamola.
+# Dev convenience env for working on molamola itself.
+#
+# End users should prefer one of:
+#   pip install molamola
+#   conda create -n molamola -c bioconda -c conda-forge molamola
+#
+# This file is for contributors who want everything (runtime deps,
+# test deps, lint, plus the SAM/BCF/htslib trio that any realistic
+# Sniffles pre-processing workflow leans on).
 #
 # Create:
 #   conda env create -f environment.yml
 #   conda activate molamola
-#
-# Run:
-#   python molamola.py plot --vcf path/to/sample.sniffles.vcf
+#   pip install -e .[dev]
 #
 # Test:
-#   pytest -v
-#
-# The bioconda tools (samtools, bcftools, htslib) are not needed by the
-# plot script itself, but are bundled because any realistic Sniffles
-# workflow needs them for VCF pre-processing (see ./summarize_bnds.sh).
+#   pytest -v && ruff check molamola/ tests/
 
 name: molamola
 
@@ -25,13 +27,12 @@ dependencies:
   - pip
   - matplotlib>=3.6
   - numpy>=1.23
-  - pandas>=1.5         # pyCirclize runtime dep
-  - biopython>=1.80     # pyCirclize runtime dep
+  - pandas>=1.5
+  - biopython>=1.80
+  - pycirclize>=1.10
   - pytest>=7
   - ruff>=0.4
   - samtools>=1.17
   - bcftools>=1.17
   - htslib>=1.17
   - tabix
-  - pip:
-      - pycirclize>=1.10

@@ -22,10 +22,25 @@ def test_html_report_embeds_figures_as_data_uris(tiny_vcf, tmp_path):
 
 
 def test_html_report_no_separate_pngs(tiny_vcf, tmp_path):
-    """No separate PNG files are written to disk; only the .report.html."""
+    """By default, no separate PNG files are written; only the .report.html."""
     mm.main(["--vcf", str(tiny_vcf), "--out", str(tmp_path)])
     pngs = list(tmp_path.glob("*.png"))
     assert pngs == [], f"expected zero PNGs, got {[p.name for p in pngs]}"
+
+
+def test_png_flag_writes_separate_pngs(tiny_vcf, tmp_path):
+    """`--png` writes circos and sv_map PNGs alongside the HTML report."""
+    rc = mm.main(["--vcf", str(tiny_vcf), "--out", str(tmp_path), "--png"])
+    assert rc == 0
+    assert (tmp_path / "tiny.report.html").exists()
+    circos = tmp_path / "tiny.report.circos.png"
+    sv_map = tmp_path / "tiny.report.sv_map.png"
+    assert circos.exists()
+    assert sv_map.exists()
+    # Both files should carry a real PNG signature, not be empty.
+    png_magic = b"\x89PNG\r\n\x1a\n"
+    assert circos.read_bytes()[:8] == png_magic
+    assert sv_map.read_bytes()[:8] == png_magic
 
 
 def test_html_report_has_required_structural_pieces(tiny_vcf, tmp_path):

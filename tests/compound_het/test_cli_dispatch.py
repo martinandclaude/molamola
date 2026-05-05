@@ -34,6 +34,25 @@ def test_bare_vcf_dispatches_to_compound_het(
     assert (tmp_path / "tiny_phased.compound_het.report.html").exists()
 
 
+def test_png_flag_writes_per_gene_pngs_in_compound_het(
+    tmp_path, tiny_phased_vcf, tiny_canonical_exons, tiny_clinvar,
+):
+    """`--png` in compound-het mode writes one PNG per plotted gene."""
+    rc = mm.main([
+        "--vcf", str(tiny_phased_vcf),
+        "--canonical-exons", str(tiny_canonical_exons),
+        "--clinvar", str(tiny_clinvar),
+        "--gene", "GENE_A",
+        "--out", str(tmp_path),
+        "--png",
+    ])
+    assert rc == 0
+    assert (tmp_path / "tiny_phased.compound_het.report.html").exists()
+    gene_png = tmp_path / "tiny_phased.compound_het.report.GENE_A.png"
+    assert gene_png.exists()
+    assert gene_png.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
 def test_unrecognised_vcf_shape_refuses(tmp_path):
     """A VCF with neither SVTYPE nor CSQ+PS is refused, not silently rendered."""
     vcf = tmp_path / "boring.vcf"
