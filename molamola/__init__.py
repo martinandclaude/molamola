@@ -3072,16 +3072,23 @@ def _header_svg() -> str:
 # ---------------------------------------------------------------------------
 
 def _add_common_args(p) -> None:
-    """Top-level args shared by both modes."""
-    p.add_argument("--vcf", required=True, type=Path,
+    """Top-level args shared by all modes."""
+    p.add_argument("--vcf", default=None, type=Path,
                    help="input VCF. molamola auto-detects the plot type "
                         "from the header: ##INFO=<ID=SVTYPE> selects the "
                         "SV / cytogenetics report; ##INFO=<ID=CSQ> + "
                         "##FORMAT=<ID=PS> selects the per-gene phased-"
-                        "haplotype panels (compound-het).")
+                        "haplotype panels (compound-het). Required "
+                        "unless --mosdepth is given; when combined with "
+                        "--mosdepth the VCF is consumed only as the BAF "
+                        "source for the karyotype panel.")
+    p.add_argument("--mosdepth", default=None, type=Path,
+                   help="mosdepth regions.bed.gz output (uniform-bin runs "
+                        "only). Activates karyotype coverage mode. "
+                        "Required unless --vcf is given.")
     p.add_argument("--out", default=None, type=Path,
                    help="output directory (default: parent directory of "
-                        "the input VCF)")
+                        "the input file)")
     p.add_argument(
         "--reference",
         choices=list(SUPPORTED_REFERENCES),
@@ -3652,14 +3659,36 @@ def compound_het_main(args: argparse.Namespace) -> int:
     return 0
 
 
+def karyotype_main(args: argparse.Namespace) -> int:
+    """Karyotype coverage mode entry point (mosdepth-driven).
+
+    Activated when --mosdepth is given. When --vcf is also given, the
+    VCF is consumed as the BAF source for the karyotype panel rather
+    than running through SV / compound-het header dispatch.
+    """
+    print("[info] karyotype coverage mode")
+    if args.vcf is not None:
+        print(f"[info] BAF source: {args.vcf}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Top-level CLI entry point. Returns a process exit code.
 
-    Auto-detects the plot mode from the VCF header and dispatches to
-    the appropriate renderer. Refuses cleanly when the VCF doesn't
-    match a supported shape rather than picking a silent default.
+    Either ``--vcf`` or ``--mosdepth`` (or both) is required. When
+    ``--mosdepth`` is set, karyotype coverage mode runs and any
+    accompanying ``--vcf`` is consumed only as the BAF source.
+    Otherwise the plot mode is auto-detected from the VCF header
+    (SV vs. compound-het). molamola refuses cleanly rather than
+    rendering a misleading default.
     """
     args = build_argparser().parse_args(argv)
+    if args.mosdepth is None and args.vcf is None:
+        print("ERROR: either --vcf or --mosdepth is required",
+              file=sys.stderr)
+        return 2
+    if args.mosdepth is not None:
+        return karyotype_main(args)
     try:
         mode = detect_vcf_mode(args.vcf)
     except (ValueError, FileNotFoundError, OSError) as e:
