@@ -74,4 +74,10 @@ packages = ["molamola"]
 version = { attr = "molamola.__version__" }
 
 [tool.setuptools.package-data]
-molamola = ["data/*.txt.gz", "data/*.tsv.gz", "data/*.tsv.xz", "data/*.png"]
+molamola = [
+    "data/*.txt.gz",
+    "data/*.tsv.gz",
+    "data/*.tsv.xz",
+    "data/*.bed.gz",
+    "data/*.png",
+]

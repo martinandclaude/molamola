@@ -1698,6 +1698,42 @@ def find_cytoband_file(reference: str = "hg38") -> Path:
     return bundled
 
 
+def find_mask_file(reference: str = "hg38") -> Path:
+    """Return the bundled karyotype-mode exclusion mask path.
+
+    Both supported references ship in the repo:
+    ``data/exclusion.hg38.bed.gz`` and ``data/exclusion.t2t.bed.gz``.
+    Used by karyotype mode to drop low-mappability bins from the CN
+    scatter, smooth, and normalisation.
+    """
+    build = "t2t" if reference == "t2t" else "hg38"
+    bundled = Path(__file__).resolve().parent / "data" / f"exclusion.{build}.bed.gz"
+    if not bundled.exists():
+        raise FileNotFoundError(
+            f"bundled exclusion mask missing: {bundled} (expected to "
+            f"ship with molamola)",
+        )
+    return bundled
+
+
+def find_gc_file(reference: str = "hg38") -> Path:
+    """Return the bundled karyotype-mode GC table path (10 kb bins).
+
+    Both supported references ship in the repo:
+    ``data/gc_10kb.hg38.bed.gz`` and ``data/gc_10kb.t2t.bed.gz``.
+    Used by karyotype mode for per-1 % GC bucket median ratio
+    correction.
+    """
+    build = "t2t" if reference == "t2t" else "hg38"
+    bundled = Path(__file__).resolve().parent / "data" / f"gc_10kb.{build}.bed.gz"
+    if not bundled.exists():
+        raise FileNotFoundError(
+            f"bundled GC table missing: {bundled} (expected to ship "
+            f"with molamola)",
+        )
+    return bundled
+
+
 def load_cytobands(path: Path) -> dict[str, list[tuple[int, int, str, str]]]:
     """Load a UCSC ``cytoBand.txt(.gz)`` file.
 
