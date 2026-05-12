@@ -194,3 +194,48 @@ def test_downsample_systematic_passthrough_below_cap():
     df = pd.DataFrame({"x": np.arange(50)})
     out = mm.downsample_systematic(df, max_points=100)
     assert len(out) == 50
+
+
+def test_detect_adaptive_sampling_unimodal_wgs_false():
+    """WGS-like unimodal autosomal depth distribution is NOT flagged."""
+    rng = np.random.default_rng(42)
+    n = 10000
+    depths = rng.normal(loc=30, scale=4, size=n).clip(min=0)
+    chroms = pd.Series(["chr1"] * n)
+    mask = np.ones(n, dtype=bool)
+    assert mm._kary_detect_adaptive_sampling(depths, mask, chroms) is False
+
+
+def test_detect_adaptive_sampling_bimodal_true():
+    """Bimodal off-target + on-target distribution IS flagged."""
+    rng = np.random.default_rng(42)
+    off = rng.normal(loc=1.0, scale=0.3, size=8000).clip(min=0)
+    on = rng.normal(loc=30.0, scale=4.0, size=2000)
+    depths = np.concatenate([off, on])
+    rng.shuffle(depths)
+    chroms = pd.Series(["chr1"] * len(depths))
+    mask = np.ones(len(depths), dtype=bool)
+    assert mm._kary_detect_adaptive_sampling(depths, mask, chroms) is True
+
+
+def test_detect_adaptive_sampling_too_few_bins_false():
+    """Below the 1000-bin floor we abstain rather than mis-call."""
+    depths = np.array([1.0, 30.0, 1.0, 30.0])
+    chroms = pd.Series(["chr1"] * 4)
+    mask = np.ones(4, dtype=bool)
+    assert mm._kary_detect_adaptive_sampling(depths, mask, chroms) is False
+
+
+def test_detect_adaptive_sampling_ignores_sex_chroms():
+    """Sex-chrom bins are not part of the autosomal-median anchor or AS call."""
+    rng = np.random.default_rng(42)
+    n_auto = 5000
+    auto_depths = rng.normal(loc=30, scale=4, size=n_auto).clip(min=0)
+    # half-coverage chrX bins (male) shouldn't flag AS in an otherwise
+    # unimodal autosomal distribution
+    n_x = 2000
+    x_depths = rng.normal(loc=15, scale=2, size=n_x).clip(min=0)
+    depths = np.concatenate([auto_depths, x_depths])
+    chroms = pd.Series(["chr1"] * n_auto + ["chrX"] * n_x)
+    mask = np.ones(len(depths), dtype=bool)
+    assert mm._kary_detect_adaptive_sampling(depths, mask, chroms) is False

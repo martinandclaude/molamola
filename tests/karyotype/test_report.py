@@ -104,6 +104,20 @@ def test_karyotype_report_reference_mismatch_refused(tmp_path, tmp_path_factory)
     assert rc == 2
 
 
+def test_karyotype_report_html_no_section_headers(tmp_path, tiny_regions):
+    """No 'Genome-wide coverage' / 'Per-chromosome coverage' headers anywhere."""
+    rc = mm.main([
+        "--mosdepth", str(tiny_regions),
+        "--reference", "hg38",
+        "--no-mask", "--no-gc",
+        "--out", str(tmp_path),
+    ])
+    assert rc == 0
+    body = (tmp_path / "tiny_regions.karyotype.report.html").read_text()
+    assert "Genome-wide coverage" not in body
+    assert "Per-chromosome coverage" not in body
+
+
 def test_karyotype_refuses_sv_vcf_as_baf_source(tmp_path, tiny_regions, capsys):
     """``--vcf`` pointing at an SV VCF is rejected with a clear error."""
     sv_vcf = tmp_path / "sample.sv.vcf"

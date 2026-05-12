@@ -2276,6 +2276,37 @@ def downsample_systematic(df: pd.DataFrame, max_points: int) -> pd.DataFrame:
     return df.iloc[::step].copy()
 
 
+def _kary_detect_adaptive_sampling(
+    depth: np.ndarray, mask_pass: np.ndarray, chroms: pd.Series,
+) -> bool:
+    """Heuristic detector for adaptive-sampling depth profiles.
+
+    Adaptive-sampling runs produce a bimodal autosomal depth
+    distribution: most of the genome at ~1x off-target background
+    plus a smaller fraction at on-target depth. WGS produces a
+    unimodal distribution around one median.
+
+    Detection rule: more than 5 % of autosomal non-masked bins sit
+    above 5x the autosomal median. In a WGS sample the only bins
+    above 5x median come from rare CN-amplification events and stay
+    well below 5 % of the genome; in an AS sample the on-target
+    fraction routinely lands at 10-20 %.
+
+    Result is surfaced in the run-metadata as "AS suspected" --
+    hedged because amplification-heavy tumour samples can trigger
+    the same rule. Stratum-aware AS normalisation is a v0.4 ask.
+    """
+    use = mask_pass & chroms.isin(KARY_AUTOSOMES).to_numpy() & (depth > 0)
+    if int(use.sum()) < 1000:
+        return False
+    autosomal = depth[use]
+    median = float(np.median(autosomal))
+    if median <= 0:
+        return False
+    high_frac = float((autosomal > 5.0 * median).mean())
+    return high_frac > 0.05
+
+
 # ---------------------------------------------------------------------------
 # Karyotype-mode plotting primitives
 # ---------------------------------------------------------------------------
@@ -2530,7 +2561,7 @@ def _kary_format_bin_size(bp: float) -> str:
 
 
 def _karyotype_meta_chips(args: argparse.Namespace, scatter_bin_label: str,
-                          sex: str) -> list[str]:
+                          sex: str, *, is_adaptive: bool = False) -> list[str]:
     """Compose the karyotype run-metadata strip as a list of chips.
 
     Used by both the in-figure metadata line and the HTML report's
@@ -2548,6 +2579,8 @@ def _karyotype_meta_chips(args: argparse.Namespace, scatter_bin_label: str,
         bits.append("mask=off")
     if getattr(args, "no_gc", False):
         bits.append("GC=off")
+    if is_adaptive:
+        bits.append("AS suspected")
     return bits
 
 
@@ -2565,7 +2598,7 @@ def _kary_attach_xpos(df: pd.DataFrame, pos_col: str,
 def render_karyotype_genome_png(
     cov: pd.DataFrame, cb: pd.DataFrame, lengths: dict[str, int],
     baf_df: pd.DataFrame | None, sex: str, bin_size: int,
-    args: argparse.Namespace,
+    args: argparse.Namespace, *, is_adaptive: bool = False,
 ) -> tuple[bytes, str]:
     """Render the genome-wide karyotype figure to PNG bytes.
 
@@ -2573,6 +2606,9 @@ def render_karyotype_genome_png(
     copy number), ``mask_pass`` (``True`` to keep), and ``smooth``
     (rolling-median per chrom) columns; :func:`karyotype_main`
     prepares those before calling.
+
+    ``is_adaptive`` flags the depth profile as adaptive-sampling-like
+    and adds an "AS suspected" chip to the metadata strip.
 
     Returns ``(png_bytes, scatter_bin_label)``. The scatter-bin label
     (e.g. ``"50 kb"``) is also stamped onto the figure's metadata
@@ -2624,7 +2660,7 @@ def render_karyotype_genome_png(
         )
         ax_baf = None
     fig.subplots_adjust(
-        left=0.045, right=0.996, top=0.880, bottom=0.085, hspace=0.06,
+        left=0.045, right=0.996, top=0.930, bottom=0.085, hspace=0.06,
     )
     fig.patch.set_alpha(0)
 
@@ -2672,14 +2708,12 @@ def render_karyotype_genome_png(
     _draw_kary_centromere_ticks(ax_cov, cb, offsets)
 
     fig.text(
-        0.045, 0.965, "Genome-wide coverage",
-        fontfamily=list(_kary_resolve_fonts(KARY_FONT_SANS)), fontsize=14, color=KARY_INK,
-        ha="left", va="center",
-    )
-    fig.text(
-        0.045, 0.935,
-        "  ·  ".join(_karyotype_meta_chips(args, scatter_bin_label, sex)),
-        fontfamily=list(_kary_resolve_fonts(KARY_FONT_MONO)), fontsize=10.5, color=KARY_INK_2,
+        0.045, 0.965,
+        "  ·  ".join(_karyotype_meta_chips(
+            args, scatter_bin_label, sex, is_adaptive=is_adaptive,
+        )),
+        fontfamily=list(_kary_resolve_fonts(KARY_FONT_MONO)),
+        fontsize=10.5, color=KARY_INK_2,
         ha="left", va="center",
     )
 
@@ -2727,7 +2761,12 @@ def _render_kary_region_panels(
                        expected_copy_number(chrom, sex))]
 
     if ax_band is not None:
-        _draw_kary_cytoband_strip(ax_band, sub_bands)
+        # Suppress band-name labels (p11.1, q22, …): the per-chrom panel is
+        # small and the names would crowd the cytoband strip. Use float("inf")
+        # so no band can be wider than the threshold.
+        _draw_kary_cytoband_strip(
+            ax_band, sub_bands, label_min_mb=float("inf"),
+        )
 
     sub_cov["xpos_local"] = sub_cov["start"]
     _kary_plot_coverage(
@@ -2743,7 +2782,10 @@ def _render_kary_region_panels(
     )
 
     _kary_apply_tabular_numerics(ax_cov)
-    _kary_align_panel_ylabels(ax_cov)
+    # No _kary_align_panel_ylabels here: that helper exists to align a
+    # stacked CN + BAF pair. Per-chrom panels are CN-only and the fixed
+    # axes-fraction pin would push the "CN" label into the tick-number
+    # column on the narrow A4-grid panels.
 
     return _kary_format_bin_size(factor * bin_size)
 
@@ -2758,6 +2800,7 @@ _KARY_PER_CHROM_ROWS: int = 8
 def render_karyotype_per_chrom_png(
     cov: pd.DataFrame, cb: pd.DataFrame, lengths: dict[str, int],
     sex: str, bin_size: int, args: argparse.Namespace,
+    *, is_adaptive: bool = False,
 ) -> tuple[bytes, str]:
     """Render the per-chromosome 3 × 8 A4-portrait karyotype grid to PNG bytes.
 
@@ -2765,6 +2808,9 @@ def render_karyotype_per_chrom_png(
     columns prepared by :func:`karyotype_main`. BAF is intentionally
     omitted from this view -- per-chrom panels are small and CN is
     the primary karyotype signal; the genome-wide panel covers BAF.
+
+    ``is_adaptive`` flags the depth profile as adaptive-sampling-like
+    and adds an "AS suspected" chip to the metadata strip.
 
     Returns ``(png_bytes, scatter_bin_label)``. The scatter-bin label
     is the one used by the last chromosome rendered; it is included
@@ -2777,14 +2823,13 @@ def render_karyotype_per_chrom_png(
     cols = _KARY_PER_CHROM_COLS
     rows = _KARY_PER_CHROM_ROWS
     fig_w, fig_h = 8.27, 11.69  # A4 portrait, inches
-    header_h = 0.55
+    header_h = 0.30  # one meta strip line; no figure title
     gs_top = 1.0 - header_h / fig_h
     gs_left, gs_right = 0.060, 0.985
     gs_bottom = 0.030
     hspace = 0.60
     wspace = 0.20
-    title_y = 1.0 - 0.18 / fig_h
-    meta_y = 1.0 - 0.40 / fig_h
+    meta_y = 1.0 - 0.14 / fig_h
     inner_hspace = 0.05
 
     fig = plt.figure(figsize=(fig_w, fig_h))
@@ -2813,24 +2858,20 @@ def render_karyotype_per_chrom_png(
             cov, cb, sex, bin_size, chrom, 0, chrom_len,
             ax_band, ax_cov, args, show_xlabel=True,
         )
-        ax_band.set_title(
-            chrom, fontsize=8, fontweight=500, color=KARY_INK,
-            loc="left", pad=2,
-        )
+        # No per-panel chrom title above the cytoband strip: the chrom
+        # name already appears in the xlabel beneath the panel
+        # ("chr1 position (Mb)").
         if c != 0:
             ax_cov.set_ylabel("")
             ax_cov.tick_params(labelleft=False)
 
     fig.text(
-        gs_left, title_y, "Per-chromosome coverage",
-        fontfamily=list(_kary_resolve_fonts(KARY_FONT_SANS)), fontsize=11.0, color=KARY_INK,
-        ha="left", va="top",
-    )
-    fig.text(
         gs_left, meta_y,
-        "  ·  ".join(_karyotype_meta_chips(args, last_scatter_label, sex)),
-        fontfamily=list(_kary_resolve_fonts(KARY_FONT_MONO)), fontsize=7.0, color=KARY_INK_2,
-        ha="left", va="top",
+        "  ·  ".join(_karyotype_meta_chips(
+            args, last_scatter_label, sex, is_adaptive=is_adaptive,
+        )),
+        fontfamily=list(_kary_resolve_fonts(KARY_FONT_MONO)),
+        fontsize=7.0, color=KARY_INK_2, ha="left", va="top",
     )
 
     buf = io.BytesIO()
@@ -3964,6 +4005,7 @@ def make_karyotype_report(
     mask_label: str,
     gc_label: str,
     n_baf_sites: int,
+    is_adaptive: bool = False,
 ) -> None:
     """Write a single-file karyotype HTML report to ``out_path``.
 
@@ -4005,6 +4047,8 @@ def make_karyotype_report(
             f'<span class="chip">BAF: {_esc(baf_source)} '
             f'({n_baf_sites:,} het sites)</span>',
         )
+    if is_adaptive:
+        chips.append('<span class="chip warn">AS suspected</span>')
 
     chips_html = "\n".join(f"    {c}" for c in chips)
     html = (
@@ -5080,6 +5124,16 @@ def karyotype_main(args: argparse.Namespace) -> int:
     cov2["cn"] = cn
     cov2["mask_pass"] = mask_pass
 
+    is_adaptive = _kary_detect_adaptive_sampling(
+        depth_corrected, mask_pass, cov2["chrom"],
+    )
+    if is_adaptive:
+        print(
+            "[info] depth distribution looks bimodal -- adaptive "
+            "sampling suspected. CN normalisation may be biased; "
+            "interpret CN scatter with care.",
+        )
+
     if args.sex == "auto":
         sex = detect_sex_from_cn(cn, cov2["chrom"], mask_pass)
         print(f"[info] inferred genomic sex: {sex}  (auto)")
@@ -5112,10 +5166,12 @@ def karyotype_main(args: argparse.Namespace) -> int:
     print("rendering genome-wide figure")
     genome_png, scatter_bin_label = render_karyotype_genome_png(
         cov2, cb, lengths, baf_df, sex, bin_size, args,
+        is_adaptive=is_adaptive,
     )
     print("rendering per-chromosome figure")
     per_chrom_png, _ = render_karyotype_per_chrom_png(
         cov2, cb, lengths, sex, bin_size, args,
+        is_adaptive=is_adaptive,
     )
 
     out_html = out_dir / f"{sample}.karyotype.report.html"
@@ -5134,6 +5190,7 @@ def karyotype_main(args: argparse.Namespace) -> int:
         mask_label=mask_label,
         gc_label=gc_label,
         n_baf_sites=n_baf_sites,
+        is_adaptive=is_adaptive,
     )
     print(f"wrote {out_html}")
 
