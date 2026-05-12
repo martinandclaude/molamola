@@ -916,6 +916,13 @@ def _parse_baf(format_kv: dict[str, str]) -> float | None:
     return None
 
 
+#: Per-allele literal-ALT length cap for BAF parsing. Above this size
+#: a record is treated as non-SNV/indel (likely STR repeat track or
+#: oversized event) and silently skipped. Matches molamola's existing
+#: 50 bp "small variant" boundary (see ``--min-svlen`` rationale).
+_KARY_BAF_MAX_ALT_LEN: int = 50
+
+
 def read_baf_vcf(path: Path, min_dp: int) -> pd.DataFrame:
     """Stream het allele fractions from a small-variant VCF as plain text.
 
@@ -923,9 +930,21 @@ def read_baf_vcf(path: Path, min_dp: int) -> pd.DataFrame:
     :func:`open_text` helper. Returns a DataFrame with columns
     ``chrom, pos, baf`` for the karyotype-mode BAF panel.
 
-    Filters applied per record:
+    Hard refusal (raises ``ValueError``) when the input is clearly
+    not a small-variant VCF -- specifically, when the header carries
+    ``##INFO=<ID=SVTYPE,...>``. Most SV callers (Sniffles2, cuteSV,
+    SVIM, pbsv, NanoVar) and CNV callers (Spectre, hificnv) emit
+    that header, and an SV / CNV record's GT + AF doesn't carry the
+    "fraction of reads supporting the alt allele at a heterozygous
+    SNV" meaning the BAF panel wants.
+
+    Filters applied per record (silent skips, no per-record errors):
 
     - ``FILTER == "PASS"``
+    - ``ALT`` not symbolic (no leading ``<``) -- skips ``<DEL>``,
+      ``<DUP>``, ``<STR>``, BND notation, etc.
+    - every literal ``ALT`` allele <= 50 bp -- skips STR repeat-track
+      ALTs and oversized indels.
     - heterozygous biallelic GT (``0/1``, ``1/0``, ``0|1``, ``1|0``)
     - ``FORMAT/DP >= min_dp``
     - chrom in :data:`CHROM_ORDER` (canonical chr1-22, chrX, chrY)
@@ -934,6 +953,20 @@ def read_baf_vcf(path: Path, min_dp: int) -> pd.DataFrame:
     computed from ``FORMAT/AD`` as ``alt / (ref + alt)``. Records
     with neither field parseable are skipped.
     """
+    with open_text(path) as fh:
+        for line in fh:
+            if not line.startswith("##"):
+                break
+            if line.startswith("##INFO=<ID=SVTYPE,"):
+                raise ValueError(
+                    f"VCF at {path} has ##INFO=<ID=SVTYPE,...> in its "
+                    f"header -- looks like an SV / CNV / BND VCF. The "
+                    f"karyotype-mode BAF panel needs a small-variant "
+                    f"VCF (SNV + small indel, from Clair3 / "
+                    f"DeepVariant / similar). Drop --vcf or point it "
+                    f"at the small-variant call set.",
+                )
+
     rows: list[tuple[str, int, float]] = []
     with open_text(path) as fh:
         for line in fh:
@@ -946,6 +979,11 @@ def read_baf_vcf(path: Path, min_dp: int) -> pd.DataFrame:
             if chrom not in CHROM_SET:
                 continue
             if f[6] != "PASS":
+                continue
+            alt = f[4]
+            if alt.startswith("<"):
+                continue
+            if any(len(a) > _KARY_BAF_MAX_ALT_LEN for a in alt.split(",")):
                 continue
             format_keys = f[8].split(":")
             sample_vals = f[9].split(":")
@@ -5034,7 +5072,11 @@ def karyotype_main(args: argparse.Namespace) -> int:
     n_baf_sites = 0
     if args.vcf is not None:
         print(f"reading BAF VCF: {args.vcf}")
-        baf_df = read_baf_vcf(args.vcf, min_dp=args.min_baf_dp)
+        try:
+            baf_df = read_baf_vcf(args.vcf, min_dp=args.min_baf_dp)
+        except ValueError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 1
         baf_source = args.vcf.name
         n_baf_sites = len(baf_df)
         print(

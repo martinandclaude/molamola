@@ -106,3 +106,70 @@ def test_parse_baf_handles_ad_variants(ad, expected):
 def test_parse_baf_prefers_af_over_ad():
     out = mm._parse_baf({"AF": "0.42", "AD": "10,90"})
     assert out == pytest.approx(0.42)
+
+
+def test_read_baf_refuses_sv_vcf(tmp_path):
+    """Header has ##INFO=<ID=SVTYPE,...> -> refuse with a helpful error."""
+    vcf = tmp_path / "sv.vcf"
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        '##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of SV">\n'
+        "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+        "chr1\t1000\t.\tA\t<DEL>\t30\tPASS\tSVTYPE=DEL\tGT\t0/1\n"
+    )
+    with pytest.raises(ValueError, match="SVTYPE"):
+        mm.read_baf_vcf(vcf, min_dp=10)
+
+
+def test_read_baf_refusal_message_points_at_small_variant_input(tmp_path):
+    """The refusal text tells the user what kind of VCF the BAF needs."""
+    vcf = tmp_path / "cnv.vcf"
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        '##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of CNV">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+    )
+    with pytest.raises(ValueError) as excinfo:
+        mm.read_baf_vcf(vcf, min_dp=10)
+    msg = str(excinfo.value)
+    assert "small-variant" in msg
+    assert "Clair3" in msg or "DeepVariant" in msg
+
+
+def test_read_baf_skips_symbolic_alt(tmp_path):
+    """ALT starting with '<' is silently skipped (no error, no row)."""
+    vcf = tmp_path / "mixed.vcf"
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n"
+        "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Depth\">\n"
+        "##FORMAT=<ID=AF,Number=A,Type=Float,Description=\"AF\">\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+        "chr1\t1000\t.\tA\tT\t30\tPASS\t.\tGT:DP:AF\t0/1:30:0.5\n"
+        "chr1\t2000\t.\tA\t<INS>\t30\tPASS\t.\tGT:DP:AF\t0/1:30:0.5\n"
+        "chr1\t3000\t.\tA\t<DEL>\t30\tPASS\t.\tGT:DP:AF\t0/1:30:0.5\n"
+    )
+    df = mm.read_baf_vcf(vcf, min_dp=10)
+    assert len(df) == 1
+    assert df["pos"].iloc[0] == 1000
+
+
+def test_read_baf_skips_oversize_alt(tmp_path):
+    """ALT longer than _KARY_BAF_MAX_ALT_LEN bp is silently skipped."""
+    long_alt = "A" * (mm._KARY_BAF_MAX_ALT_LEN + 1)
+    vcf = tmp_path / "with_oversize.vcf"
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n"
+        "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Depth\">\n"
+        "##FORMAT=<ID=AF,Number=A,Type=Float,Description=\"AF\">\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+        "chr1\t1000\t.\tA\tT\t30\tPASS\t.\tGT:DP:AF\t0/1:30:0.5\n"
+        f"chr1\t2000\t.\tA\t{long_alt}\t30\tPASS\t.\tGT:DP:AF\t0/1:30:0.5\n"
+        # 50 bp is the cap; exactly 50 should be kept
+        f"chr1\t3000\t.\tA\t{'C' * mm._KARY_BAF_MAX_ALT_LEN}\t30\tPASS\t.\tGT:DP:AF\t0/1:30:0.45\n"
+    )
+    df = mm.read_baf_vcf(vcf, min_dp=10)
+    assert len(df) == 2
+    assert list(df["pos"]) == [1000, 3000]

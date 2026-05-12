@@ -102,3 +102,25 @@ def test_karyotype_report_reference_mismatch_refused(tmp_path, tmp_path_factory)
         "--out", str(tmp_path),
     ])
     assert rc == 2
+
+
+def test_karyotype_refuses_sv_vcf_as_baf_source(tmp_path, tiny_regions, capsys):
+    """``--vcf`` pointing at an SV VCF is rejected with a clear error."""
+    sv_vcf = tmp_path / "sample.sv.vcf"
+    sv_vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        '##INFO=<ID=SVTYPE,Number=1,Type=String,Description="SV type">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+        "chr1\t1000\t.\tA\t<DEL>\t30\tPASS\tSVTYPE=DEL\tGT\t0/1\n"
+    )
+    rc = mm.main([
+        "--mosdepth", str(tiny_regions),
+        "--vcf", str(sv_vcf),
+        "--reference", "hg38",
+        "--no-mask", "--no-gc",
+        "--out", str(tmp_path),
+    ])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "SVTYPE" in err
+    assert "small-variant" in err
