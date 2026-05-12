@@ -34,10 +34,9 @@ def test_mosdepth_alone_dispatches_to_karyotype(tmp_path, tiny_regions):
     out_html = tmp_path / "tiny_regions.karyotype.report.html"
     assert out_html.exists()
     body = out_html.read_text()
-    # Two embedded karyotype figures + one header-fish PNG = 3
-    assert body.count("data:image/png;base64,") == 3
+    # One karyotype figure + one header-fish PNG = 2
+    assert body.count("data:image/png;base64,") == 2
     assert 'id="fig-karyotype-genome"' in body
-    assert 'id="fig-karyotype-per-chrom"' in body
 
 
 def test_mosdepth_plus_vcf_dispatches_to_karyotype(tmp_path, tiny_regions):

@@ -41,28 +41,6 @@ def offsets(lengths):
     return mm.cum_offsets(lengths)
 
 
-def test_rounded_pill_path_vertex_count():
-    p = mm._kary_rounded_pill_path(0.0, 0.0, 100.0, 1.0, 1.0)
-    assert len(p.vertices) == 11
-    assert len(p.codes) == 11
-
-
-def test_draw_kary_cytoband_strip_renders(fresh_ax, cb):
-    chr1 = cb[cb["chrom"] == "chr1"]
-    n_patches_before = len(fresh_ax.patches)
-    mm._draw_kary_cytoband_strip(fresh_ax, chr1)
-    n_patches_after = len(fresh_ax.patches)
-    assert n_patches_after > n_patches_before
-    # 3 bands + 1 silhouette clip + 1 border edge = 5 patches
-    assert n_patches_after - n_patches_before == 5
-
-
-def test_draw_kary_cytoband_strip_empty_input_safe(fresh_ax):
-    empty = pd.DataFrame(columns=["chrom", "start", "end", "name", "stain"])
-    mm._draw_kary_cytoband_strip(fresh_ax, empty)
-    assert list(fresh_ax.get_xticks()) == []
-
-
 def test_draw_kary_centromere_ticks_one_per_chrom(fresh_ax, cb, offsets):
     n_lines_before = len(fresh_ax.lines)
     mm._draw_kary_centromere_ticks(fresh_ax, cb, offsets)
@@ -206,8 +184,6 @@ def test_plotting_does_not_leak_rcparams(fresh_ax, cb, tiny_regions):
         plt.rcParams["axes.edgecolor"],
         plt.rcParams["grid.color"],
     )
-    chr1 = cb[cb["chrom"] == "chr1"]
-    mm._draw_kary_cytoband_strip(fresh_ax, chr1)
     lengths = mm.chrom_lengths_from_cb(cb)
     offsets = mm.cum_offsets(lengths)
     mm._draw_kary_centromere_ticks(fresh_ax, cb, offsets)

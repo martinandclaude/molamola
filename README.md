@@ -10,7 +10,7 @@ A Python plotting tool for Oxford Nanopore variation data. **One input in, one s
 
 - a VCF with `##INFO=<ID=SVTYPE,...>` → SV / cytogenetics report (long-read SV VCFs from Sniffles2 / cuteSV / SVIM / pbsv / NanoVar);
 - a VCF with `##INFO=<ID=CSQ,...>` + `##FORMAT=<ID=PS,...>` → per-gene phased-haplotype panels (phased + VEP-annotated small-variant VCFs from WhatsHap / HiPhase);
-- a mosdepth `regions.bed.gz` (via `--mosdepth`) → karyotype coverage report (genome-wide CN + optional BAF, plus a per-chromosome A4-portrait grid).
+- a mosdepth `regions.bed.gz` (via `--mosdepth`) → karyotype coverage report (genome-wide CN scatter + rolling-median smooth, with an optional BAF panel beneath when paired with a small-variant VCF).
 
 Figures embedded as base64 PNGs — no external assets, opens offline.
 
@@ -51,7 +51,7 @@ open path/to/sample.compound_het.report.html
 # Just one gene from a phased + VEP VCF
 molamola --vcf sample.phased.vep.vcf.gz --gene NEB
 
-# Mosdepth output → karyotype coverage report (genome-wide + per-chromosome)
+# Mosdepth output → karyotype coverage report (genome-wide CN)
 molamola --mosdepth sample.regions.bed.gz --reference hg38
 open path/to/sample.karyotype.report.html
 

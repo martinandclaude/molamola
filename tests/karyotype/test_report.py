@@ -43,7 +43,7 @@ def test_karyotype_report_with_baf_includes_baf_chip(
     assert "het sites" in body
 
 
-def test_karyotype_report_png_flag_writes_standalone_pngs(
+def test_karyotype_report_png_flag_writes_standalone_png(
     tmp_path, tiny_regions,
 ):
     rc = mm.main([
@@ -56,11 +56,11 @@ def test_karyotype_report_png_flag_writes_standalone_pngs(
     assert rc == 0
     assert (tmp_path / "tiny_regions.karyotype.report.html").exists()
     genome = tmp_path / "tiny_regions.karyotype.genome.png"
-    per_chrom = tmp_path / "tiny_regions.karyotype.per_chrom.png"
     assert genome.exists()
-    assert per_chrom.exists()
     assert genome.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
-    assert per_chrom.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    # The previous v0.3.0 also produced a *.karyotype.per_chrom.png;
+    # confirm we no longer emit it.
+    assert not (tmp_path / "tiny_regions.karyotype.per_chrom.png").exists()
 
 
 def test_karyotype_report_sample_override(tmp_path, tiny_regions):
