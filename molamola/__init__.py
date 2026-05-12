@@ -2633,6 +2633,149 @@ def render_karyotype_genome_png(
     return buf.getvalue(), scatter_bin_label
 
 
+def _render_kary_region_panels(
+    cov: pd.DataFrame, cb: pd.DataFrame, sex: str, bin_size: int,
+    chrom: str, start: int, end: int,
+    ax_band, ax_cov, args: argparse.Namespace,
+    show_xlabel: bool = True,
+) -> str:
+    """Draw the cytoband strip + CN panel for one chrom region into the
+    supplied axes. Returns the scatter-bin label string used."""
+    sub_cov = cov[
+        (cov["chrom"] == chrom)
+        & (cov["start"] < end)
+        & (cov["end"] > start)
+    ].copy()
+    sub_bands = cb[
+        (cb["chrom"] == chrom)
+        & (cb["start"] < end)
+        & (cb["end"] > start)
+    ].copy()
+
+    factor = max(1, int(round(args.scatter_bin_kb * 1000 / bin_size)))
+    cap_factor = max(1, int(np.ceil(max(len(sub_cov), 1) / args.max_points)))
+    factor = max(factor, cap_factor)
+    sub_cov_xy = sub_cov.copy()
+    sub_cov_xy["xpos"] = sub_cov_xy["start"]
+    scatter = aggregate_for_scatter(sub_cov_xy, factor)
+    scatter["xpos_local"] = scatter["xpos"]
+
+    expected_lines = [(float(start), float(end),
+                       expected_copy_number(chrom, sex))]
+
+    if ax_band is not None:
+        _draw_kary_cytoband_strip(ax_band, sub_bands)
+
+    sub_cov["xpos_local"] = sub_cov["start"]
+    _kary_plot_coverage(
+        ax_cov, scatter, sub_cov, expected_lines, args.ymax,
+        x_col="xpos_local",
+    )
+
+    ax_cov.set_xlim(start, end)
+    if show_xlabel:
+        ax_cov.set_xlabel(f"{chrom} position (Mb)")
+    ax_cov.xaxis.set_major_formatter(
+        mticker.FuncFormatter(lambda x, _: f"{x / 1e6:.1f}"),
+    )
+
+    _kary_apply_tabular_numerics(ax_cov)
+    _kary_align_panel_ylabels(ax_cov)
+
+    return _kary_format_bin_size(factor * bin_size)
+
+
+#: Hardcoded per-chrom layout: 3 columns × 8 rows = 24 cells matches
+#: chr1..22 + chrX + chrY. Locked at port time (handoff decision
+#: 2026-05-11); no CLI knob.
+_KARY_PER_CHROM_COLS: int = 3
+_KARY_PER_CHROM_ROWS: int = 8
+
+
+def render_karyotype_per_chrom_png(
+    cov: pd.DataFrame, cb: pd.DataFrame, lengths: dict[str, int],
+    sex: str, bin_size: int, args: argparse.Namespace,
+) -> tuple[bytes, str]:
+    """Render the per-chromosome 3 × 8 A4-portrait karyotype grid to PNG bytes.
+
+    ``cov`` must already carry the ``cn``, ``mask_pass``, ``smooth``
+    columns prepared by :func:`karyotype_main`. BAF is intentionally
+    omitted from this view -- per-chrom panels are small and CN is
+    the primary karyotype signal; the genome-wide panel covers BAF.
+
+    Returns ``(png_bytes, scatter_bin_label)``. The scatter-bin label
+    is the one used by the last chromosome rendered; it is included
+    in the figure's metadata strip and returned for HTML reuse.
+    """
+    chroms = [c for c in CHROM_ORDER if lengths.get(c, 0) > 0]
+    if not chroms:
+        raise ValueError("no chromosomes with non-zero length in cytoband")
+
+    cols = _KARY_PER_CHROM_COLS
+    rows = _KARY_PER_CHROM_ROWS
+    fig_w, fig_h = 8.27, 11.69  # A4 portrait, inches
+    header_h = 0.55
+    gs_top = 1.0 - header_h / fig_h
+    gs_left, gs_right = 0.060, 0.985
+    gs_bottom = 0.030
+    hspace = 0.60
+    wspace = 0.20
+    title_y = 1.0 - 0.18 / fig_h
+    meta_y = 1.0 - 0.40 / fig_h
+    inner_hspace = 0.05
+
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    fig.patch.set_alpha(0)
+    outer = fig.add_gridspec(
+        rows, cols,
+        top=gs_top - 0.005, bottom=gs_bottom,
+        left=gs_left, right=gs_right,
+        hspace=hspace, wspace=wspace,
+    )
+
+    last_scatter_label = "?"
+    for i, chrom in enumerate(chroms):
+        r, c = i // cols, i % cols
+        if r >= rows:
+            break
+        inner = outer[r, c].subgridspec(
+            len(KARY_HEIGHT_RATIOS_BAND_CN), 1,
+            height_ratios=list(KARY_HEIGHT_RATIOS_BAND_CN),
+            hspace=inner_hspace,
+        )
+        ax_band = fig.add_subplot(inner[0])
+        ax_cov = fig.add_subplot(inner[1], sharex=ax_band)
+        chrom_len = lengths[chrom]
+        last_scatter_label = _render_kary_region_panels(
+            cov, cb, sex, bin_size, chrom, 0, chrom_len,
+            ax_band, ax_cov, args, show_xlabel=True,
+        )
+        ax_band.set_title(
+            chrom, fontsize=8, fontweight=500, color=KARY_INK,
+            loc="left", pad=2,
+        )
+        if c != 0:
+            ax_cov.set_ylabel("")
+            ax_cov.tick_params(labelleft=False)
+
+    fig.text(
+        gs_left, title_y, "Per-chromosome coverage",
+        fontfamily=list(KARY_FONT_SANS), fontsize=11.0, color=KARY_INK,
+        ha="left", va="top",
+    )
+    fig.text(
+        gs_left, meta_y,
+        "  ·  ".join(_karyotype_meta_chips(args, last_scatter_label, sex)),
+        fontfamily=list(KARY_FONT_MONO), fontsize=7.0, color=KARY_INK_2,
+        ha="left", va="top",
+    )
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=200)
+    plt.close(fig)
+    return buf.getvalue(), last_scatter_label
+
+
 def load_cytobands(path: Path) -> dict[str, list[tuple[int, int, str, str]]]:
     """Load a UCSC ``cytoBand.txt(.gz)`` file.
 
