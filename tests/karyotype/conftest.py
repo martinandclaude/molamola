@@ -20,3 +20,27 @@ TEST_DATA = Path(__file__).resolve().parent / "data"
 def karyotype_data_dir() -> Path:
     """Absolute path to ``tests/karyotype/data/``."""
     return TEST_DATA
+
+
+@pytest.fixture(scope="session")
+def tiny_regions() -> Path:
+    """Synthetic mosdepth regions.bed.gz (4 chroms x 50 1 Mb bins)."""
+    return TEST_DATA / "tiny_regions.bed.gz"
+
+
+@pytest.fixture(scope="session")
+def tiny_cytoband() -> Path:
+    """Synthetic UCSC cytoband (4 chroms x 3 bands: p / acen / q)."""
+    return TEST_DATA / "tiny_cytoband.txt.gz"
+
+
+@pytest.fixture(scope="session")
+def tiny_mask() -> Path:
+    """Synthetic 3-col mask BED with a handful of intervals."""
+    return TEST_DATA / "tiny_mask.bed.gz"
+
+
+@pytest.fixture(scope="session")
+def tiny_gc() -> Path:
+    """Synthetic 10 kb GC table at mosdepth-bin midpoints only."""
+    return TEST_DATA / "tiny_gc.bed.gz"

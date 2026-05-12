@@ -50,6 +50,7 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
+import pandas as pd
 from matplotlib.colors import to_rgb
 from matplotlib.path import Path as MplPath
 
@@ -127,6 +128,29 @@ NOISE_COLOR: str = "#888888"
 #: highly repetitive in hg38 and a common source of long-read
 #: mismapping that produces phantom BND calls.
 ACROCENTRIC_CHROMS: tuple[str, ...] = ("chr13", "chr14", "chr15", "chr21", "chr22")
+
+
+# ---------------------------------------------------------------------------
+# Karyotype-mode constants
+# ---------------------------------------------------------------------------
+
+#: Canonical autosomes used by karyotype-mode normalisation (the
+#: autosomal median anchors CN = 2.0).
+KARY_AUTOSOMES: tuple[str, ...] = tuple(f"chr{i}" for i in range(1, 23))
+
+#: Chromosomes whose p-arm label is dropped when rendering arm-tick
+#: labels in karyotype mode. Acrocentric short arms (chr13/14/15/21/22)
+#: are too short to label without colliding with the q-label;
+#: chrY's p-arm is similarly tiny.
+KARY_ACROCENTRIC_FOR_LABELS: tuple[str, ...] = (
+    "chr13", "chr14", "chr15", "chr21", "chr22", "chrY",
+)
+
+#: Sentinel value used by the bundled 10 kb GC tables to mark bins
+#: where every source base was N (no GC% defined). Joined-on-bin
+#: lookups for cov rows that fall outside every GC bin also use this
+#: sentinel.
+GC_MISSING: int = 255
 
 
 # ---------------------------------------------------------------------------
@@ -1732,6 +1756,345 @@ def find_gc_file(reference: str = "hg38") -> Path:
             f"with molamola)",
         )
     return bundled
+
+
+# ---------------------------------------------------------------------------
+# Karyotype-mode data pipeline (mosdepth -> CN -> scatter / smooth)
+# ---------------------------------------------------------------------------
+
+#: Modal-bin-frequency threshold below which read_mosdepth refuses
+#: rather than aggregating a non-uniform-bins file into meaningless
+#: output. mosdepth ``--by <int>`` is the supported shape.
+_KARY_MIN_MODAL_BIN_FRACTION: float = 0.95
+
+
+def read_mosdepth(path: Path) -> tuple[pd.DataFrame, int]:
+    """Load a mosdepth ``regions.bed.gz`` and return ``(cov, bin_size)``.
+
+    The input must come from a uniform-bin mosdepth run
+    (``mosdepth --by <int>``). Karyotype mode refuses non-uniform
+    inputs because its scatter aggregation and rolling-median smooth
+    both assume a constant bin size; aggregating variable bins would
+    yield meaningless plots.
+
+    ``cov`` has columns ``chrom, start, end, depth`` with ``chrom``
+    ordered as a pandas ``Categorical`` over :data:`CHROM_ORDER`.
+    ``bin_size`` is the modal ``end - start`` across all
+    canonical-chrom rows.
+
+    Raises ``ValueError`` if fewer than 95 % of rows share the modal
+    bin size, or zero rows survive after filtering to canonical
+    chromosomes (chr1-22, chrX, chrY).
+    """
+    df = pd.read_csv(
+        path, sep="\t", header=None,
+        names=["chrom", "start", "end", "depth"],
+        dtype={"chrom": str, "start": np.int64, "end": np.int64,
+               "depth": np.float32},
+    )
+    df = df[df["chrom"].isin(CHROM_SET)].copy()
+    if len(df) == 0:
+        raise ValueError(
+            f"mosdepth file {path} has zero rows on canonical "
+            f"chromosomes (chr1-22, chrX, chrY) -- was it called "
+            f"against a build using '1'/'2'/'X' chrom naming?",
+        )
+    spans = (df["end"] - df["start"]).to_numpy()
+    modal_bin = int(np.bincount(spans).argmax())
+    modal_share = float((spans == modal_bin).mean())
+    if modal_share < _KARY_MIN_MODAL_BIN_FRACTION:
+        raise ValueError(
+            f"mosdepth file {path} has non-uniform bins "
+            f"(modal {modal_bin} bp covers only {modal_share:.1%} of "
+            f"rows). Re-run mosdepth with --by <int> for karyotype mode.",
+        )
+    df["chrom"] = pd.Categorical(
+        df["chrom"], categories=CHROM_ORDER, ordered=True,
+    )
+    df = df.sort_values(["chrom", "start"]).reset_index(drop=True)
+    return df, modal_bin
+
+
+def read_cytoband_df(path: Path) -> pd.DataFrame:
+    """Load a UCSC cytoband file as a pandas ``DataFrame``.
+
+    Distinct from :func:`load_cytobands` (which returns a per-chrom
+    dict of tuples and is read by SV mode): karyotype mode prefers
+    the flat tabular form for groupby-based queries. ``chrom`` is
+    ordered as a ``Categorical`` over :data:`CHROM_ORDER`; an
+    ``arm`` column is derived from the band name's first character
+    (``p`` or ``q``).
+    """
+    cb = pd.read_csv(
+        path, sep="\t", header=None,
+        names=["chrom", "start", "end", "name", "stain"],
+        dtype={"chrom": str, "start": np.int64, "end": np.int64,
+               "name": str, "stain": str},
+    )
+    cb = cb[cb["chrom"].isin(CHROM_SET)].copy()
+    cb["chrom"] = pd.Categorical(
+        cb["chrom"], categories=CHROM_ORDER, ordered=True,
+    )
+    cb["arm"] = cb["name"].str[0]
+    return cb
+
+
+def chrom_lengths_from_cb(cb: pd.DataFrame) -> dict[str, int]:
+    """Return ``{chrom: max(end)}`` from a cytoband DataFrame."""
+    return (
+        cb.groupby("chrom", observed=True)["end"]
+        .max()
+        .astype(int)
+        .to_dict()
+    )
+
+
+def cum_offsets(lengths: dict[str, int]) -> dict[str, int]:
+    """Per-chrom cumulative bp offset for genome-wide x-axis coordinates."""
+    out: dict[str, int] = {}
+    running = 0
+    for c in CHROM_ORDER:
+        out[c] = running
+        running += lengths.get(c, 0)
+    return out
+
+
+def annotate_mask(cov: pd.DataFrame, mask_bed: Path, bin_size: int,
+                  lengths: dict[str, int]) -> np.ndarray:
+    """Per-cov-row bool: ``True`` if the bin overlaps the exclusion mask.
+
+    Aligned 1:1 with ``cov`` rows. Downstream code typically uses
+    ``mask_pass = ~result`` as the keep-mask.
+    """
+    masked = {
+        c: np.zeros((lengths[c] + bin_size - 1) // bin_size, dtype=bool)
+        for c in CHROM_ORDER if c in lengths
+    }
+    with open_text(mask_bed) as fh:
+        for line in fh:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 3:
+                continue
+            chrom = parts[0]
+            if chrom not in masked:
+                continue
+            s, e = int(parts[1]), int(parts[2])
+            b0 = s // bin_size
+            b1 = (e + bin_size - 1) // bin_size
+            masked[chrom][b0:b1] = True
+    out = np.zeros(len(cov), dtype=bool)
+    for chrom, idx in cov.groupby("chrom", observed=True).indices.items():
+        if chrom not in masked:
+            continue
+        bins = (cov["start"].iloc[idx].to_numpy() // bin_size).astype(np.int64)
+        valid = bins < len(masked[chrom])
+        if valid.any():
+            out[idx[valid]] = masked[chrom][bins[valid]]
+    return out
+
+
+def annotate_centromere_pad(cov: pd.DataFrame, cb: pd.DataFrame,
+                            lengths: dict[str, int],
+                            pad_kb: float) -> np.ndarray:
+    """Per-cov-row bool: bins within ``pad_kb`` of an ``acen`` band.
+
+    Peri-centromeric coverage is inflated by satellite-derived
+    multi-mappers; many of those bins still pass the short-read
+    accessibility mask, and when the rolling-median window crosses a
+    centromere the surviving flanking bins dominate the median and
+    produce a spurious smooth-line spike.
+    """
+    if pad_kb <= 0:
+        return np.zeros(len(cov), dtype=bool)
+    pad_bp = int(pad_kb * 1000)
+    out = np.zeros(len(cov), dtype=bool)
+    acen = cb[cb["stain"] == "acen"]
+    for chrom, sub in acen.groupby("chrom", observed=True, sort=False):
+        if chrom not in lengths:
+            continue
+        cen_start = max(0, int(sub["start"].min()) - pad_bp)
+        cen_end = min(lengths[chrom], int(sub["end"].max()) + pad_bp)
+        idx = ((cov["chrom"] == chrom)
+               & (cov["start"] < cen_end)
+               & (cov["end"] > cen_start)).to_numpy()
+        out |= idx
+    return out
+
+
+def annotate_gc(cov: pd.DataFrame, gc_bed: Path,
+                gc_bin_size: int = 10_000) -> np.ndarray:
+    """Per-cov-row GC% (int 0-100; :data:`GC_MISSING` if unknown).
+
+    Each cov row gets the GC% of the ``gc_bin_size``-bp window
+    containing its midpoint. Rows whose midpoint falls outside every
+    GC bin (e.g. cov rows past the GC table's chromosome length)
+    return :data:`GC_MISSING`.
+    """
+    gc = pd.read_csv(
+        gc_bed, sep="\t", header=None,
+        names=["chrom", "start", "end", "gc"],
+        dtype={"chrom": str, "start": np.int64, "end": np.int64,
+               "gc": np.int16},
+    )
+    gc = gc[gc["chrom"].isin(CHROM_SET)]
+    cov_mid = ((cov["start"] + cov["end"]) // 2).to_numpy()
+    cov_bin_start = (cov_mid // gc_bin_size) * gc_bin_size
+    lookup = pd.DataFrame({
+        "chrom": cov["chrom"].astype(str).to_numpy(),
+        "start": cov_bin_start,
+    })
+    merged = lookup.merge(
+        gc[["chrom", "start", "gc"]], on=["chrom", "start"], how="left",
+    )
+    return merged["gc"].fillna(GC_MISSING).astype(np.int16).to_numpy()
+
+
+def fit_gc_correction(depth: np.ndarray, gc_pct: np.ndarray,
+                      mask_pass: np.ndarray, chroms: pd.Series,
+                      min_bin_count: int = 100) -> dict[int, float]:
+    """Per-1 % GC bucket median ratio for depth correction.
+
+    Restricted to autosomal, non-masked, GC-defined bins. Buckets
+    with fewer than ``min_bin_count`` supporting bins or a
+    non-positive median get factor 1.0. Otherwise the factor is
+    ``global_autosomal_median / bucket_median`` -- multiplying raw
+    depth by ``factor`` flattens the GC bias.
+    """
+    use = (
+        mask_pass
+        & chroms.isin(KARY_AUTOSOMES).to_numpy()
+        & (gc_pct != GC_MISSING)
+    )
+    if not use.any():
+        return {}
+    df = pd.DataFrame({"gc": gc_pct[use].astype(int), "depth": depth[use]})
+    grouped = df.groupby("gc")["depth"].agg(["median", "count"])
+    global_med = float(np.median(df["depth"]))
+    factors: dict[int, float] = {}
+    for gc_val, row in grouped.iterrows():
+        if row["count"] < min_bin_count or row["median"] <= 0:
+            factors[int(gc_val)] = 1.0
+        else:
+            factors[int(gc_val)] = global_med / float(row["median"])
+    return factors
+
+
+def apply_gc_correction(depth: np.ndarray, gc_pct: np.ndarray,
+                        factors: dict[int, float]) -> np.ndarray:
+    """Apply :func:`fit_gc_correction` factors via a 256-entry lookup."""
+    if not factors:
+        return depth.astype(np.float64)
+    lookup = np.ones(256, dtype=np.float64)
+    for k, v in factors.items():
+        if 0 <= k < 256:
+            lookup[k] = v
+    return depth.astype(np.float64) * lookup[gc_pct.astype(np.int64).clip(0, 255)]
+
+
+def detect_sex_from_cn(cn: np.ndarray, chroms: pd.Series,
+                       mask_pass: np.ndarray) -> str:
+    """Call ``"male"`` if median chrY CN > 0.3; else ``"female"``.
+
+    The threshold is a heuristic that works for both hg38 (mappable
+    chrY fraction is small) and T2T-CHM13v2 (chrY fully resolved).
+    XYY / XXY samples will still be called male, which is fine for
+    the expected-CN-line purpose; HTML metadata surfaces this as
+    "inferred genomic sex" rather than a clinical sex call.
+    """
+    is_y = (chroms == "chrY").to_numpy()
+    use = is_y & mask_pass & np.isfinite(cn)
+    if not use.any():
+        return "female"
+    return "male" if float(np.median(cn[use])) > 0.3 else "female"
+
+
+def expected_copy_number(chrom: str, sex: str) -> float:
+    """Reference copy number for ``chrom`` under the given ``sex``."""
+    if chrom in KARY_AUTOSOMES:
+        return 2.0
+    if chrom == "chrX":
+        return 1.0 if sex == "male" else 2.0
+    if chrom == "chrY":
+        return 1.0 if sex == "male" else 0.0
+    return float("nan")
+
+
+def rolling_median_per_chrom(df: pd.DataFrame, bin_size: int,
+                             window_mb: float,
+                             mask_pass: np.ndarray) -> pd.DataFrame:
+    """Per-chrom rolling median of ``df['cn']``, ignoring masked bins.
+
+    Requires at least half the window's worth of non-masked support
+    to emit a value -- otherwise the smooth would jitter wildly
+    across the sliver of unmasked bins next to a big masked stretch.
+
+    Returns a copy of ``df`` with a new ``smooth`` column.
+    """
+    win = max(1, int(round(window_mb * 1e6 / bin_size)))
+    df = df.copy()
+    df["_in"] = np.where(mask_pass, df["cn"].to_numpy(), np.nan)
+    parts = []
+    for _, sub in df.groupby("chrom", observed=True, sort=False):
+        sub = sub.copy()
+        sub["smooth"] = (
+            sub["_in"]
+            .rolling(win, center=True, min_periods=max(1, win // 2))
+            .median()
+        )
+        parts.append(sub)
+    out = pd.concat(parts, ignore_index=True)
+    return out.drop(columns=["_in"])
+
+
+def aggregate_for_scatter(cov: pd.DataFrame, factor: int) -> pd.DataFrame:
+    """Per-chrom median-aggregate every ``factor`` consecutive bins.
+
+    Each output row is the median of ``factor`` non-masked bins.
+    Median is robust to outlier bins (e.g. residual segdup
+    contamination that survives the mask). Fully-masked groups are
+    dropped. ``factor <= 1`` returns the non-masked rows unchanged.
+    """
+    if factor <= 1:
+        out = cov[cov["mask_pass"]].copy()
+        return out[["chrom", "xpos", "cn", "mask_pass"]].reset_index(drop=True)
+
+    parts = []
+    for chrom, sub in cov.groupby("chrom", observed=True, sort=False):
+        sub = sub.reset_index(drop=True)
+        n = len(sub)
+        if n == 0:
+            continue
+        groups = np.arange(n) // factor
+        cn_masked = np.where(sub["mask_pass"], sub["cn"], np.nan)
+        df = pd.DataFrame({
+            "chrom": [chrom] * n,
+            "xpos": sub["xpos"].to_numpy(),
+            "_cn_masked": cn_masked,
+            "_grp": groups,
+        })
+        agg = df.groupby("_grp", sort=False, observed=True).agg(
+            chrom=("chrom", "first"),
+            xpos=("xpos", "mean"),
+            cn=("_cn_masked", "median"),
+        )
+        agg = agg.dropna(subset=["cn"]).reset_index(drop=True)
+        agg["mask_pass"] = True
+        parts.append(agg)
+    if not parts:
+        return cov.iloc[0:0][["chrom", "xpos", "cn", "mask_pass"]].copy()
+    return pd.concat(parts, ignore_index=True)
+
+
+def downsample_systematic(df: pd.DataFrame, max_points: int) -> pd.DataFrame:
+    """Keep every Nth row to cap a DataFrame at ``max_points`` rows.
+
+    Used for BAF, where averaging would erase the very 0.33 / 0.67 /
+    0 / 1 deviations a karyotype reviewer is looking for.
+    """
+    if len(df) <= max_points:
+        return df
+    step = int(np.ceil(len(df) / max_points))
+    return df.iloc[::step].copy()
 
 
 def load_cytobands(path: Path) -> dict[str, list[tuple[int, int, str, str]]]:
