@@ -6,7 +6,13 @@
 |_| |_| |_|\___/|_|\__,_|_| |_| |_|\___/|_|\__,_|         ||
 ```
 
-A Python plotting tool for Oxford Nanopore variation data. **One VCF in, one self-contained HTML report out.** molamola inspects the VCF header and picks between an SV / cytogenetics report (long-read SV VCFs from Sniffles2 / cuteSV / SVIM / pbsv / NanoVar) and per-gene phased-haplotype panels (phased + VEP-annotated small-variant VCFs from WhatsHap / HiPhase). Figures embedded as base64 PNGs — no external assets, opens offline.
+A Python plotting tool for Oxford Nanopore variation data. **One input in, one self-contained HTML report out.** molamola picks between three plot types based on its input:
+
+- a VCF with `##INFO=<ID=SVTYPE,...>` → SV / cytogenetics report (long-read SV VCFs from Sniffles2 / cuteSV / SVIM / pbsv / NanoVar);
+- a VCF with `##INFO=<ID=CSQ,...>` + `##FORMAT=<ID=PS,...>` → per-gene phased-haplotype panels (phased + VEP-annotated small-variant VCFs from WhatsHap / HiPhase);
+- a mosdepth `regions.bed.gz` (via `--mosdepth`) → karyotype coverage report (genome-wide CN + optional BAF, plus a per-chromosome A4-portrait grid).
+
+Figures embedded as base64 PNGs — no external assets, opens offline.
 
 **Full documentation:** <https://martinandclaude.github.io/molamola/>
 
@@ -44,9 +50,17 @@ open path/to/sample.compound_het.report.html
 
 # Just one gene from a phased + VEP VCF
 molamola --vcf sample.phased.vep.vcf.gz --gene NEB
+
+# Mosdepth output → karyotype coverage report (genome-wide + per-chromosome)
+molamola --mosdepth sample.regions.bed.gz --reference hg38
+open path/to/sample.karyotype.report.html
+
+# Add a BAF panel beneath the genome-wide CN scatter
+molamola --mosdepth sample.regions.bed.gz --vcf sample.phased.vcf.gz \
+         --reference hg38
 ```
 
-The plot type is auto-detected from the VCF header: `##INFO=<ID=SVTYPE>` selects SV mode; `##INFO=<ID=CSQ>` + `##FORMAT=<ID=PS>` selects compound-het mode. VCFs that match neither shape are refused with a clear error.
+Either `--vcf` or `--mosdepth` is required. With `--vcf`, the plot mode is auto-detected from the VCF header (`##INFO=<ID=SVTYPE>` → SV; `##INFO=<ID=CSQ>` + `##FORMAT=<ID=PS>` → compound-het; otherwise refused). With `--mosdepth`, karyotype coverage mode runs and any accompanying `--vcf` is used as the BAF source. Karyotype mode expects uniform-bin mosdepth runs (`mosdepth --by <int>`).
 
 See the [docs](https://martinandclaude.github.io/molamola/) for example output, VEP annotation prep, the full CLI reference, filter explanations, and worked examples.
 
@@ -58,6 +72,7 @@ See the [docs](https://martinandclaude.github.io/molamola/) for example output, 
 - [pyCirclize](https://github.com/moshi4/pyCirclize) — circos plot.
 - [matplotlib](https://github.com/matplotlib/matplotlib), [numpy](https://github.com/numpy/numpy).
 - [bcftools / samtools / htslib](https://github.com/samtools/bcftools) — VCF pre-processing helpers.
+- [mosdepth](https://github.com/brentp/mosdepth) — per-bin coverage input to karyotype mode.
 - [UCSC Genome Browser](https://hgdownload.soe.ucsc.edu/) — hg38 and T2T-CHM13v2.0 cytobands.
 - [iconsdb.com](https://www.iconsdb.com/) — header fish icon (deep-pink, mirrored).
 

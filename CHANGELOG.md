@@ -5,6 +5,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-12
+
+### Added
+
+- **Karyotype coverage mode** — third plot type, dispatched by a new top-level `--mosdepth PATH` flag. Produces a single self-contained HTML report carrying two embedded figures: a genome-wide CN scatter + rolling-median smooth (with an optional BAF panel beneath when `--vcf` is also given) and a per-chromosome 3 × 8 A4-portrait grid (CN-only, layout locked). Mosdepth `regions.bed.gz` is the primary input; uniform-bin runs only (`mosdepth --by <int>`). CN is computed as `2.0 × depth / autosomal_non_masked_median`. Sex is auto-detected from chrY CN unless `--sex {male,female}` overrides; HTML metadata surfaces this as "inferred genomic sex" — the threshold is a heuristic, not a clinical sex call. Supports hg38 and T2T-CHM13v2.0.
+- **Bundled exclusion masks** — `data/exclusion.hg38.bed.gz` (~5.7 MB) and `data/exclusion.t2t.bed.gz` (~6 MB). Bins overlapping these intervals (low mappability ∪ polymorphic-TR catalog) drop out of the CN scatter, smooth, and normalisation. Override with `--mask PATH` or disable with `--no-mask`. Best fit for ~500 bp mosdepth runs.
+- **Bundled coarse (10 kb) GC tables** — `data/gc_10kb.hg38.bed.gz` and `data/gc_10kb.t2t.bed.gz` (~1.5 MB each). Per-1 % GC bucket median-ratio correction applied to raw depth before the autosomal-median normalisation. Override with `--gc PATH` or disable with `--no-gc`.
+- **Plain-text BAF parser** — `read_baf_vcf()` streams het allele fractions from a small-variant VCF without shelling out to bcftools. Reads `FORMAT/AF` when present; falls back to `FORMAT/AD` parsed as `ref,alt` and computed as `alt / (ref + alt)`. Filters: `FILTER == "PASS"`, biallelic heterozygous GT, `FORMAT/DP >= --min-baf-dp`, canonical chroms only.
+- **Karyotype-mode flags** — `--mosdepth`, `--mask`, `--no-mask`, `--gc`, `--no-gc`, `--centromere-pad-kb` (default 1000), `--scatter-bin-kb` (default 50), `--smooth-window-mb` (default 0.5), `--max-points` (default 200000), `--max-baf-points` (default 80000), `--min-baf-dp` (default 10), `--ymax` (default 5.0), `--sex {male,female,auto}` (default auto).
+- **`scripts/derive_karyotype_refs.py`** — one-shot derive script that copies the upstream exclusion BED verbatim into the molamola data tree and aggregates the upstream 500 bp GC table down to 10 kb bins (mean of non-sentinel values per window, all-N runs stay flagged as 255). Re-run on upstream refresh.
+
+### Changed
+
+- **`--vcf` is no longer required** when `--mosdepth` is given. The CLI now needs either `--vcf` or `--mosdepth`; both may be combined to add a BAF panel to the karyotype figure. When `--mosdepth` is set, karyotype mode runs and any accompanying `--vcf` is consumed only as the BAF source — VCF-header-based dispatch is skipped.
+- `build_argparser()` gains a third `add_argument_group` ("Karyotype-mode flags") so `--help` shows SV / compound-het / karyotype flag groups side-by-side.
+- Bundled-data total grows from ~14 MB to ~28 MB (the new exclusion masks + 10 kb GC tables).
+
 ## [0.2.0] — 2026-05-05
 
 ### Added
