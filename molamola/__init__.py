@@ -152,6 +152,54 @@ KARY_ACROCENTRIC_FOR_LABELS: tuple[str, ...] = (
 #: sentinel.
 GC_MISSING: int = 255
 
+#: Karyotype-mode palette (Direction A "Paper"). Distinct from the
+#: SV-mode ISCN greyscale; applied per-call so matplotlib rcParams
+#: stay unchanged between modes.
+KARY_PAPER: str   = "#FAF8F4"
+KARY_INK: str     = "#1F2024"
+KARY_INK_2: str   = "#5C5D63"
+KARY_INK_3: str   = "#9A9892"
+KARY_RULE: str    = "#E4E0D8"
+KARY_SCATTER: str = "#3D3D45"
+KARY_ROSE: str    = "#DC5A99"
+KARY_OXFORD: str  = "#1F4F7A"
+KARY_MIST: str    = "#DDE6D8"
+
+#: Warm-palette cytoband stain map used by the karyotype cytoband
+#: silhouette. Distinct from the SV-mode greyscale ``CYTOBAND_COLORS``
+#: because the karyotype strip is the chromosome's primary visual
+#: identity (rather than a backdrop under density bars).
+KARY_CYTO_STAIN_COLOR: dict[str, str] = {
+    "gneg":    KARY_PAPER,
+    "gpos25":  "#D9D5CC",
+    "gpos50":  KARY_INK_3,
+    "gpos75":  KARY_INK_2,
+    "gpos100": KARY_INK,
+    "acen":    "#A33A3A",
+    "gvar":    "#B89A6F",
+    "stalk":   KARY_ROSE,
+}
+
+#: Font stacks for karyotype-mode tick / label text. Applied per-call;
+#: matplotlib walks the list and picks the first installed font.
+KARY_FONT_SANS: tuple[str, ...] = (
+    "IBM Plex Sans", "Helvetica", "Arial", "DejaVu Sans", "sans-serif",
+)
+KARY_FONT_MONO: tuple[str, ...] = (
+    "IBM Plex Mono", "Menlo", "Consolas", "DejaVu Sans Mono", "monospace",
+)
+
+#: Karyotype-mode figure / layout constants. Locked at port time.
+KARY_FIG_W: float                          = 18.0
+KARY_FIG_H_GENOME_BAF: float               = 6.4
+KARY_FIG_H_GENOME_ONLY: float              = 4.8
+KARY_FIG_H_REGION_BAF: float               = 5.2
+KARY_FIG_H_REGION_ONLY: float              = 3.8
+KARY_YLABEL_X: float                       = -0.030
+KARY_HEIGHT_RATIOS_CN_BAF: tuple[float, float]        = (2.4, 1.0)
+KARY_HEIGHT_RATIOS_BAND_CN_BAF: tuple[float, float, float] = (0.35, 2.4, 1.0)
+KARY_HEIGHT_RATIOS_BAND_CN: tuple[float, float]       = (0.35, 2.4)
+
 
 # ---------------------------------------------------------------------------
 # Compound-het constants (locked 2026-05-02; do not relitigate)
@@ -2187,6 +2235,235 @@ def downsample_systematic(df: pd.DataFrame, max_points: int) -> pd.DataFrame:
         return df
     step = int(np.ceil(len(df) / max_points))
     return df.iloc[::step].copy()
+
+
+# ---------------------------------------------------------------------------
+# Karyotype-mode plotting primitives
+# ---------------------------------------------------------------------------
+#
+# All styling (palette, fonts, line widths) is passed per-call. Do NOT
+# call ``plt.rcParams.update()`` from any function in this section:
+# rcParams is global module state and any leakage would silently shift
+# the SV-mode and compound-het renders that share the same Python
+# process.
+
+_KARY_DARK_STAINS: frozenset[str] = frozenset({"gpos75", "gpos100", "acen"})
+
+
+def _kary_rounded_pill_path(x: float, y: float, w: float, h: float,
+                            rx: float) -> MplPath:
+    """Path for a rectangle with circular caps at the left and right ends.
+
+    ``rx`` is the horizontal radius in data coords; the vertical
+    radius is half the height (so the caps are full half-circles in
+    the axes aspect, scaled into ellipses by the data transform).
+    """
+    ry = h / 2
+    cy = y + ry
+    verts = [
+        (x + rx, y),
+        (x + w - rx, y),
+        (x + w, y),
+        (x + w, cy),
+        (x + w, y + h),
+        (x + w - rx, y + h),
+        (x + rx, y + h),
+        (x, y + h),
+        (x, cy),
+        (x, y),
+        (x + rx, y),
+    ]
+    codes = [
+        MplPath.MOVETO,
+        MplPath.LINETO,
+        MplPath.CURVE3, MplPath.CURVE3,
+        MplPath.CURVE3, MplPath.CURVE3,
+        MplPath.LINETO,
+        MplPath.CURVE3, MplPath.CURVE3,
+        MplPath.CURVE3, MplPath.CURVE3,
+    ]
+    return MplPath(verts, codes)
+
+
+def _draw_kary_cytoband_strip(ax, bands: pd.DataFrame,
+                              label_min_mb: float = 5.0) -> None:
+    """Karyotype-mode cytoband strip as a rounded-pill silhouette.
+
+    Bands are clipped to the silhouette so the leftmost and rightmost
+    stains take the rounded telomere shape. Band names are rendered
+    on bands wider than ``label_min_mb`` Mb; ``acen`` / dark stains
+    get a paper-colour label, light stains get an INK_2 label.
+    """
+    if bands.empty:
+        ax.set_ylim(0, 1)
+        ax.set_yticks([])
+        ax.set_xticks([])
+        ax.grid(False)
+        for s in ("right", "top", "left", "bottom"):
+            ax.spines[s].set_visible(False)
+        return
+
+    chrom_start = int(bands["start"].min())
+    chrom_end = int(bands["end"].max())
+    chrom_w = chrom_end - chrom_start
+    rx = chrom_w * 0.008
+    y0, y1 = 0.15, 0.85
+    h = y1 - y0
+
+    silhouette = _kary_rounded_pill_path(chrom_start, y0, chrom_w, h, rx)
+    clip_patch = mpatches.PathPatch(
+        silhouette, facecolor="none", edgecolor="none",
+        transform=ax.transData,
+    )
+    ax.add_patch(clip_patch)
+
+    for _, row in bands.iterrows():
+        rect = mpatches.Rectangle(
+            (row["start"], y0), row["end"] - row["start"], h,
+            facecolor=KARY_CYTO_STAIN_COLOR.get(row["stain"], "#dddddd"),
+            edgecolor="none",
+        )
+        ax.add_patch(rect)
+        rect.set_clip_path(clip_patch)
+
+    border = mpatches.PathPatch(
+        silhouette, facecolor="none", edgecolor=KARY_INK_2,
+        linewidth=0.7, transform=ax.transData,
+    )
+    ax.add_patch(border)
+
+    for _, row in bands.iterrows():
+        if (row["end"] - row["start"]) > label_min_mb * 1e6:
+            text_color = (KARY_PAPER if row["stain"] in _KARY_DARK_STAINS
+                          else KARY_INK_2)
+            ax.text(
+                (row["start"] + row["end"]) / 2, 0.5, row["name"],
+                ha="center", va="center", fontsize=9,
+                fontfamily=list(KARY_FONT_SANS), color=text_color,
+            )
+
+    ax.set_ylim(0, 1)
+    ax.set_yticks([])
+    ax.set_xticks([])
+    ax.grid(False)
+    for s in ("right", "top", "left", "bottom"):
+        ax.spines[s].set_visible(False)
+
+
+def _draw_kary_centromere_ticks(ax, cb: pd.DataFrame,
+                                offsets: dict[str, int]) -> None:
+    """Small INK_3 tick at each chromosome's p/q boundary on the top edge.
+
+    Acts as an orientation cue inside the genome-wide coverage panel.
+    """
+    for chrom, sub in cb.groupby("chrom", observed=True, sort=False):
+        sub = sub.sort_values("start")
+        p_bands = sub[sub["arm"] == "p"]
+        if p_bands.empty or chrom not in offsets:
+            continue
+        cen = offsets[chrom] + int(p_bands["end"].max())
+        ax.plot(
+            [cen, cen], [0.985, 1.015],
+            transform=ax.get_xaxis_transform(),
+            color=KARY_INK_3, linewidth=0.5, clip_on=False, zorder=5,
+        )
+
+
+def _kary_build_arm_ticks(cb: pd.DataFrame,
+                          offsets: dict[str, int]) -> tuple[list[float], list[str]]:
+    """Tick (xs, labels) for the chromosome-arm axis above the coverage panel.
+
+    Acrocentric p-arms (chr13/14/15/21/22, chrY) are dropped from the
+    label list — in matplotlib's real font metrics their p-label
+    crashes into the q-label of the same chromosome.
+    """
+    xs: list[float] = []
+    labels: list[str] = []
+    for chrom, sub in cb.groupby("chrom", observed=True, sort=False):
+        sub = sub.sort_values("start")
+        if chrom not in offsets:
+            continue
+        short = chrom.replace("chr", "")
+        for arm in ("p", "q"):
+            if arm == "p" and chrom in KARY_ACROCENTRIC_FOR_LABELS:
+                continue
+            bands = sub[sub["arm"] == arm]
+            if bands.empty:
+                continue
+            centre = offsets[chrom] + (int(bands["start"].min())
+                                       + int(bands["end"].max())) / 2
+            xs.append(centre)
+            labels.append(f"{short}{arm}")
+    return xs, labels
+
+
+def _kary_plot_coverage(ax, scatter_df: pd.DataFrame,
+                        smooth_df: pd.DataFrame,
+                        expected_lines: list[tuple[float, float, float]],
+                        ymax: float, x_col: str = "xpos") -> None:
+    """CN scatter + per-chrom rolling-median smooth + expected-CN dashes."""
+    sc_p = scatter_df[scatter_df["mask_pass"]]
+    ax.scatter(
+        sc_p[x_col], sc_p["cn"], s=2.4, alpha=0.32,
+        c=KARY_SCATTER, linewidths=0, rasterized=True,
+    )
+    for _chrom, sub in smooth_df.groupby("chrom", observed=True, sort=False):
+        ax.plot(
+            sub[x_col], sub["smooth"], color=KARY_ROSE,
+            lw=2.0, solid_capstyle="round",
+        )
+    for x0, x1, y in expected_lines:
+        ax.plot(
+            [x0, x1], [y, y], color=KARY_OXFORD,
+            lw=0.9, alpha=0.85, dashes=(4, 2),
+        )
+    ax.set_ylim(0, ymax)
+    ax.set_ylabel("CN")
+
+
+def _kary_plot_baf(ax, baf_df: pd.DataFrame, x_col: str = "xpos") -> None:
+    """BAF scatter with reference grid lines at 0.25 / 0.5 / 0.75."""
+    ax.scatter(
+        baf_df[x_col], baf_df["baf"], s=2.0, alpha=0.30,
+        c=KARY_SCATTER, linewidths=0, rasterized=True,
+    )
+    for y in (0.25, 0.5, 0.75):
+        ax.axhline(y, color=KARY_OXFORD, lw=0.6, dashes=(3, 2), alpha=0.55)
+    ax.set_ylim(0, 1)
+    ax.set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
+    ax.set_ylabel("BAF")
+
+
+def _kary_apply_tabular_numerics(*axes) -> None:
+    """Switch tick label font to the karyotype mono stack.
+
+    Prevents digit-width jitter between ticks like ``0.5`` and ``0.50``
+    on the BAF panel.
+    """
+    mono = list(KARY_FONT_MONO)
+    for ax in axes:
+        for tl in ax.get_xticklabels() + ax.get_yticklabels():
+            tl.set_fontfamily(mono)
+
+
+def _kary_align_panel_ylabels(*axes) -> None:
+    """Pin each panel's y-axis label to ``KARY_YLABEL_X``.
+
+    Otherwise the BAF panel's 4-char ticks (``0.50``) push its
+    y-label further left than the CN panel's; with this pinning,
+    ``CN`` and ``BAF`` align vertically.
+    """
+    for ax in axes:
+        ax.yaxis.set_label_coords(KARY_YLABEL_X, 0.5)
+
+
+def _kary_format_bin_size(bp: float) -> str:
+    """Human-readable bin size (Mb / kb / bp) for run-metadata strips."""
+    if bp >= 1e6:
+        return f"{bp / 1e6:.1f} Mb"
+    if bp >= 1e3:
+        return f"{bp / 1e3:.0f} kb"
+    return f"{bp:.0f} bp"
 
 
 def load_cytobands(path: Path) -> dict[str, list[tuple[int, int, str, str]]]:
