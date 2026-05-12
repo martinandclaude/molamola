@@ -2466,6 +2466,173 @@ def _kary_format_bin_size(bp: float) -> str:
     return f"{bp:.0f} bp"
 
 
+def _karyotype_meta_chips(args: argparse.Namespace, scatter_bin_label: str,
+                          sex: str) -> list[str]:
+    """Compose the karyotype run-metadata strip as a list of chips.
+
+    Used by both the in-figure metadata line and the HTML report's
+    run-metadata section so the same provenance shows up in both
+    places.
+    """
+    bits: list[str] = [
+        args.mosdepth.name,
+        args.reference,
+        f"sex={sex}",
+        f"bin={scatter_bin_label}",
+        f"smooth={args.smooth_window_mb} Mb",
+    ]
+    if getattr(args, "no_mask", False):
+        bits.append("mask=off")
+    if getattr(args, "no_gc", False):
+        bits.append("GC=off")
+    return bits
+
+
+def _kary_attach_xpos(df: pd.DataFrame, pos_col: str,
+                      offsets: dict[str, int]) -> pd.DataFrame:
+    """Add a genome-wide ``xpos`` column = ``pos_col + offset[chrom]``."""
+    df = df.copy()
+    df["xpos"] = (
+        df[pos_col].astype(np.int64)
+        + df["chrom"].map(offsets).astype(np.int64)
+    )
+    return df
+
+
+def render_karyotype_genome_png(
+    cov: pd.DataFrame, cb: pd.DataFrame, lengths: dict[str, int],
+    baf_df: pd.DataFrame | None, sex: str, bin_size: int,
+    args: argparse.Namespace,
+) -> tuple[bytes, str]:
+    """Render the genome-wide karyotype figure to PNG bytes.
+
+    ``cov`` must already carry ``cn`` (autosomal-median-normalised
+    copy number), ``mask_pass`` (``True`` to keep), and ``smooth``
+    (rolling-median per chrom) columns; :func:`karyotype_main`
+    prepares those before calling.
+
+    Returns ``(png_bytes, scatter_bin_label)``. The scatter-bin label
+    (e.g. ``"50 kb"``) is also stamped onto the figure's metadata
+    strip — returning it lets the HTML report reuse the same string
+    without re-deriving the aggregation factor.
+    """
+    offsets = cum_offsets(lengths)
+    cov_xy = _kary_attach_xpos(cov, "start", offsets)
+
+    factor = max(1, int(round(args.scatter_bin_kb * 1000 / bin_size)))
+    cap_factor = max(1, int(np.ceil(len(cov_xy) / args.max_points)))
+    factor = max(factor, cap_factor)
+    scatter = aggregate_for_scatter(cov_xy, factor)
+    scatter_bin_label = _kary_format_bin_size(factor * bin_size)
+    print(
+        f"[info] coverage scatter: {len(scatter):,} points "
+        f"(median of {factor} bins, ~{scatter_bin_label})",
+    )
+
+    expected_lines: list[tuple[float, float, float]] = []
+    for chrom in CHROM_ORDER:
+        chrom_len = lengths.get(chrom, 0)
+        if chrom_len == 0:
+            continue
+        x0 = float(offsets[chrom])
+        expected_lines.append(
+            (x0, x0 + float(chrom_len), expected_copy_number(chrom, sex)),
+        )
+
+    baf_plot: pd.DataFrame | None = None
+    if baf_df is not None and len(baf_df) > 0:
+        baf_xy = _kary_attach_xpos(baf_df, "pos", offsets)
+        baf_plot = downsample_systematic(baf_xy, args.max_baf_points)
+        print(
+            f"[info] BAF scatter: {len(baf_plot):,} points "
+            f"(downsampled from {len(baf_df):,})",
+        )
+
+    if baf_plot is not None and len(baf_plot) > 0:
+        fig, (ax_cov, ax_baf) = plt.subplots(
+            2, 1,
+            figsize=(KARY_FIG_W, KARY_FIG_H_GENOME_BAF),
+            gridspec_kw={"height_ratios": list(KARY_HEIGHT_RATIOS_CN_BAF)},
+            sharex=True,
+        )
+    else:
+        fig, ax_cov = plt.subplots(
+            figsize=(KARY_FIG_W, KARY_FIG_H_GENOME_ONLY),
+        )
+        ax_baf = None
+    fig.subplots_adjust(
+        left=0.045, right=0.996, top=0.880, bottom=0.085, hspace=0.06,
+    )
+    fig.patch.set_alpha(0)
+
+    _kary_plot_coverage(
+        ax_cov, scatter, cov_xy, expected_lines, args.ymax,
+    )
+
+    chrom_centres: list[float] = []
+    chrom_labels: list[str] = []
+    for chrom in CHROM_ORDER:
+        chrom_len = lengths.get(chrom, 0)
+        if chrom_len == 0:
+            continue
+        for ax in (ax_cov, ax_baf) if ax_baf else (ax_cov,):
+            ax.axvline(offsets[chrom], color=KARY_RULE, lw=0.5, zorder=0.5)
+        chrom_centres.append(offsets[chrom] + chrom_len / 2)
+        chrom_labels.append(chrom.replace("chr", ""))
+    total = offsets[CHROM_ORDER[-1]] + lengths.get(CHROM_ORDER[-1], 0)
+    for ax in (ax_cov, ax_baf) if ax_baf else (ax_cov,):
+        ax.axvline(total, color=KARY_RULE, lw=0.5, zorder=0.5)
+        ax.set_xlim(0, total)
+
+    if ax_baf is not None:
+        _kary_plot_baf(ax_baf, baf_plot)
+        ax_cov.tick_params(labelbottom=False)
+
+    bottom_ax = ax_baf if ax_baf else ax_cov
+    bottom_ax.set_xticks(chrom_centres)
+    bottom_ax.set_xticklabels(
+        chrom_labels, fontfamily=list(KARY_FONT_MONO),
+        color=KARY_INK, fontsize=11.5, fontweight="medium",
+    )
+
+    arm_xs, arm_labels = _kary_build_arm_ticks(cb, offsets)
+    sec = ax_cov.secondary_xaxis("top")
+    sec.set_xticks(arm_xs)
+    sec.set_xticklabels(
+        arm_labels, fontfamily=list(KARY_FONT_SANS),
+        color=KARY_INK_2, fontsize=9.5, rotation=0,
+    )
+    sec.tick_params(length=0, pad=2)
+    for spine in sec.spines.values():
+        spine.set_visible(False)
+
+    _draw_kary_centromere_ticks(ax_cov, cb, offsets)
+
+    fig.text(
+        0.045, 0.965, "Genome-wide coverage",
+        fontfamily=list(KARY_FONT_SANS), fontsize=14, color=KARY_INK,
+        ha="left", va="center",
+    )
+    fig.text(
+        0.045, 0.935,
+        "  ·  ".join(_karyotype_meta_chips(args, scatter_bin_label, sex)),
+        fontfamily=list(KARY_FONT_MONO), fontsize=10.5, color=KARY_INK_2,
+        ha="left", va="center",
+    )
+
+    if ax_baf is not None:
+        _kary_apply_tabular_numerics(ax_cov, ax_baf)
+        _kary_align_panel_ylabels(ax_cov, ax_baf)
+    else:
+        _kary_apply_tabular_numerics(ax_cov)
+        _kary_align_panel_ylabels(ax_cov)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=200)
+    plt.close(fig)
+    return buf.getvalue(), scatter_bin_label
+
+
 def load_cytobands(path: Path) -> dict[str, list[tuple[int, int, str, str]]]:
     """Load a UCSC ``cytoBand.txt(.gz)`` file.
 
