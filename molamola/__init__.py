@@ -841,6 +841,98 @@ def read_vcf(
     return contigs, bnds, svs, median_cov
 
 
+_KARY_HET_GTS: frozenset[str] = frozenset({"0/1", "1/0", "0|1", "1|0"})
+
+
+def _parse_baf(format_kv: dict[str, str]) -> float | None:
+    """Extract a B-allele fraction from a parsed FORMAT/SAMPLE mapping.
+
+    Prefers ``AF``; falls back to ``AD`` parsed as
+    ``ref_count,alt_count`` and computed as ``alt / (ref + alt)``.
+    Returns ``None`` if neither field is present or parseable.
+    """
+    af = format_kv.get("AF")
+    if af and af not in (".", ""):
+        try:
+            return float(af.split(",")[0])
+        except ValueError:
+            pass
+    ad = format_kv.get("AD")
+    if ad and ad not in (".", ""):
+        try:
+            counts = [int(x) for x in ad.split(",")]
+        except ValueError:
+            return None
+        if len(counts) >= 2 and counts[0] + counts[1] > 0:
+            return counts[1] / (counts[0] + counts[1])
+    return None
+
+
+def read_baf_vcf(path: Path, min_dp: int) -> pd.DataFrame:
+    """Stream het allele fractions from a small-variant VCF as plain text.
+
+    No bcftools dependency; reads gzipped or plain VCF via the
+    :func:`open_text` helper. Returns a DataFrame with columns
+    ``chrom, pos, baf`` for the karyotype-mode BAF panel.
+
+    Filters applied per record:
+
+    - ``FILTER == "PASS"``
+    - heterozygous biallelic GT (``0/1``, ``1/0``, ``0|1``, ``1|0``)
+    - ``FORMAT/DP >= min_dp``
+    - chrom in :data:`CHROM_ORDER` (canonical chr1-22, chrX, chrY)
+
+    The BAF value is taken from ``FORMAT/AF`` if present, otherwise
+    computed from ``FORMAT/AD`` as ``alt / (ref + alt)``. Records
+    with neither field parseable are skipped.
+    """
+    rows: list[tuple[str, int, float]] = []
+    with open_text(path) as fh:
+        for line in fh:
+            if line.startswith("#") or not line.strip():
+                continue
+            f = line.rstrip("\n").split("\t")
+            if len(f) < 10:
+                continue
+            chrom = f[0]
+            if chrom not in CHROM_SET:
+                continue
+            if f[6] != "PASS":
+                continue
+            format_keys = f[8].split(":")
+            sample_vals = f[9].split(":")
+            kv = dict(zip(format_keys, sample_vals))
+            if kv.get("GT", "") not in _KARY_HET_GTS:
+                continue
+            try:
+                dp = int(kv.get("DP", "0"))
+            except ValueError:
+                continue
+            if dp < min_dp:
+                continue
+            baf = _parse_baf(kv)
+            if baf is None:
+                continue
+            try:
+                pos = int(f[1])
+            except ValueError:
+                continue
+            rows.append((chrom, pos, float(baf)))
+    if not rows:
+        return pd.DataFrame({
+            "chrom": pd.Categorical(
+                [], categories=CHROM_ORDER, ordered=True,
+            ),
+            "pos": np.array([], dtype=np.int64),
+            "baf": np.array([], dtype=np.float64),
+        })
+    df = pd.DataFrame(rows, columns=["chrom", "pos", "baf"])
+    df["chrom"] = pd.Categorical(
+        df["chrom"], categories=CHROM_ORDER, ordered=True,
+    )
+    return df.sort_values(["chrom", "pos"]).reset_index(drop=True)
+
+
 def detect_vcf_mode(vcf_path: Path) -> str:
     """Inspect the VCF header and pick the right plotting mode.
 

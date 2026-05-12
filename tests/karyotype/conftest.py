@@ -44,3 +44,15 @@ def tiny_mask() -> Path:
 def tiny_gc() -> Path:
     """Synthetic 10 kb GC table at mosdepth-bin midpoints only."""
     return TEST_DATA / "tiny_gc.bed.gz"
+
+
+@pytest.fixture(scope="session")
+def tiny_baf() -> Path:
+    """Synthetic small-variant VCF with FORMAT/AF for BAF tests."""
+    return TEST_DATA / "tiny_baf.vcf"
+
+
+@pytest.fixture(scope="session")
+def tiny_baf_no_af() -> Path:
+    """Synthetic small-variant VCF with FORMAT/AD only (AF absent)."""
+    return TEST_DATA / "tiny_baf_no_af.vcf"
