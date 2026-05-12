@@ -37,6 +37,7 @@ __version__ = "0.3.0"
 
 import argparse
 import base64
+import functools
 import gzip
 import html as html_mod
 import io
@@ -2288,6 +2289,30 @@ def downsample_systematic(df: pd.DataFrame, max_points: int) -> pd.DataFrame:
 _KARY_DARK_STAINS: frozenset[str] = frozenset({"gpos75", "gpos100", "acen"})
 
 
+@functools.cache
+def _kary_resolve_fonts(candidates: tuple[str, ...]) -> tuple[str, ...]:
+    """Filter ``candidates`` to fonts matplotlib can find on this system.
+
+    Returns a tuple in candidate order with missing fonts removed,
+    except the final entry (assumed to be a matplotlib generic family
+    like ``"sans-serif"`` or ``"monospace"``) is always kept as a
+    guaranteed fallback.
+
+    Eliminates the ``findfont: '<name>' not found`` warning storm on
+    systems without the design-time fonts installed (HPC nodes, fresh
+    Linux installs) while still using IBM Plex / Menlo when they are
+    present.
+
+    Memoised so the matplotlib font scan happens once per candidate
+    tuple, not once per text element.
+    """
+    from matplotlib import font_manager
+    available = {f.name for f in font_manager.fontManager.ttflist}
+    keepers = [name for name in candidates[:-1] if name in available]
+    keepers.append(candidates[-1])
+    return tuple(keepers)
+
+
 def _kary_rounded_pill_path(x: float, y: float, w: float, h: float,
                             rx: float) -> MplPath:
     """Path for a rectangle with circular caps at the left and right ends.
@@ -2377,7 +2402,7 @@ def _draw_kary_cytoband_strip(ax, bands: pd.DataFrame,
             ax.text(
                 (row["start"] + row["end"]) / 2, 0.5, row["name"],
                 ha="center", va="center", fontsize=9,
-                fontfamily=list(KARY_FONT_SANS), color=text_color,
+                fontfamily=list(_kary_resolve_fonts(KARY_FONT_SANS)), color=text_color,
             )
 
     ax.set_ylim(0, 1)
@@ -2478,7 +2503,7 @@ def _kary_apply_tabular_numerics(*axes) -> None:
     Prevents digit-width jitter between ticks like ``0.5`` and ``0.50``
     on the BAF panel.
     """
-    mono = list(KARY_FONT_MONO)
+    mono = list(_kary_resolve_fonts(KARY_FONT_MONO))
     for ax in axes:
         for tl in ax.get_xticklabels() + ax.get_yticklabels():
             tl.set_fontfamily(mono)
@@ -2629,7 +2654,7 @@ def render_karyotype_genome_png(
     bottom_ax = ax_baf if ax_baf else ax_cov
     bottom_ax.set_xticks(chrom_centres)
     bottom_ax.set_xticklabels(
-        chrom_labels, fontfamily=list(KARY_FONT_MONO),
+        chrom_labels, fontfamily=list(_kary_resolve_fonts(KARY_FONT_MONO)),
         color=KARY_INK, fontsize=11.5, fontweight="medium",
     )
 
@@ -2637,7 +2662,7 @@ def render_karyotype_genome_png(
     sec = ax_cov.secondary_xaxis("top")
     sec.set_xticks(arm_xs)
     sec.set_xticklabels(
-        arm_labels, fontfamily=list(KARY_FONT_SANS),
+        arm_labels, fontfamily=list(_kary_resolve_fonts(KARY_FONT_SANS)),
         color=KARY_INK_2, fontsize=9.5, rotation=0,
     )
     sec.tick_params(length=0, pad=2)
@@ -2648,13 +2673,13 @@ def render_karyotype_genome_png(
 
     fig.text(
         0.045, 0.965, "Genome-wide coverage",
-        fontfamily=list(KARY_FONT_SANS), fontsize=14, color=KARY_INK,
+        fontfamily=list(_kary_resolve_fonts(KARY_FONT_SANS)), fontsize=14, color=KARY_INK,
         ha="left", va="center",
     )
     fig.text(
         0.045, 0.935,
         "  ·  ".join(_karyotype_meta_chips(args, scatter_bin_label, sex)),
-        fontfamily=list(KARY_FONT_MONO), fontsize=10.5, color=KARY_INK_2,
+        fontfamily=list(_kary_resolve_fonts(KARY_FONT_MONO)), fontsize=10.5, color=KARY_INK_2,
         ha="left", va="center",
     )
 
@@ -2798,13 +2823,13 @@ def render_karyotype_per_chrom_png(
 
     fig.text(
         gs_left, title_y, "Per-chromosome coverage",
-        fontfamily=list(KARY_FONT_SANS), fontsize=11.0, color=KARY_INK,
+        fontfamily=list(_kary_resolve_fonts(KARY_FONT_SANS)), fontsize=11.0, color=KARY_INK,
         ha="left", va="top",
     )
     fig.text(
         gs_left, meta_y,
         "  ·  ".join(_karyotype_meta_chips(args, last_scatter_label, sex)),
-        fontfamily=list(KARY_FONT_MONO), fontsize=7.0, color=KARY_INK_2,
+        fontfamily=list(_kary_resolve_fonts(KARY_FONT_MONO)), fontsize=7.0, color=KARY_INK_2,
         ha="left", va="top",
     )
 

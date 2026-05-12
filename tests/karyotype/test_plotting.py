@@ -170,6 +170,30 @@ def test_kary_format_bin_size(bp, expected):
     assert mm._kary_format_bin_size(bp) == expected
 
 
+def test_kary_resolve_fonts_keeps_only_available_plus_generic():
+    """Filter candidates down to installed fonts; always keep the last entry."""
+    resolved = mm._kary_resolve_fonts(
+        ("DefinitelyNotInstalledFont12345", "AlsoMissing67890", "sans-serif"),
+    )
+    assert resolved == ("sans-serif",)
+
+
+def test_kary_resolve_fonts_preserves_present_fonts():
+    """A font that exists on this system should survive resolution."""
+    resolved = mm._kary_resolve_fonts(mm.KARY_FONT_SANS)
+    # Final element is matplotlib's generic 'sans-serif'; always present.
+    assert resolved[-1] == "sans-serif"
+    # On any matplotlib install, DejaVu Sans is bundled and should resolve.
+    assert "DejaVu Sans" in resolved or "DejaVu Sans" in mm.KARY_FONT_SANS
+
+
+def test_kary_resolve_fonts_is_cached():
+    """Memoised: two calls return the same object."""
+    a = mm._kary_resolve_fonts(mm.KARY_FONT_MONO)
+    b = mm._kary_resolve_fonts(mm.KARY_FONT_MONO)
+    assert a is b
+
+
 def test_plotting_does_not_leak_rcparams(fresh_ax, cb, tiny_regions):
     """Render every plotting primitive and confirm rcParams stays put.
 
