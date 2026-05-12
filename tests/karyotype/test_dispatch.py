@@ -16,38 +16,53 @@ import pytest
 import molamola as mm
 
 
-def test_mosdepth_alone_dispatches_to_karyotype(tmp_path, capsys):
-    """``--mosdepth foo.bed.gz`` routes to karyotype mode (stub returns 0)."""
-    bed = tmp_path / "fake.regions.bed.gz"
-    rc = mm.main(["--mosdepth", str(bed), "--out", str(tmp_path)])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "karyotype coverage mode" in out
+def test_mosdepth_alone_dispatches_to_karyotype(tmp_path, tiny_regions):
+    """``--mosdepth foo.bed.gz`` runs karyotype mode end-to-end.
 
-
-def test_mosdepth_plus_vcf_dispatches_to_karyotype(tmp_path, capsys):
-    """Both flags: karyotype mode wins; VCF is treated as the BAF source.
-
-    The VCF passed here has no SV/CSQ/PS headers; if dispatch tried to
-    run :func:`detect_vcf_mode` on it the CLI would exit 1. A clean
-    exit-0 proves karyotype dispatch intercepted before VCF header
-    inspection.
+    Uses ``--no-mask --no-gc`` because the bundled exclusion mask and
+    GC table are calibrated for ~500 bp mosdepth runs; the synthetic
+    fixture is at 1 Mb where the mask would over-apply. Mask /
+    GC-correction logic is exercised separately in test_normalise.py.
     """
-    bed = tmp_path / "fake.regions.bed.gz"
-    vcf = tmp_path / "no_signal.vcf"
-    vcf.write_text(
-        "##fileformat=VCFv4.2\n"
-        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
-    )
     rc = mm.main([
-        "--mosdepth", str(bed),
-        "--vcf", str(vcf),
+        "--mosdepth", str(tiny_regions),
+        "--reference", "hg38",
+        "--no-mask", "--no-gc",
         "--out", str(tmp_path),
     ])
     assert rc == 0
-    out = capsys.readouterr().out
-    assert "karyotype coverage mode" in out
-    assert f"BAF source: {vcf}" in out
+    out_html = tmp_path / "tiny_regions.karyotype.report.html"
+    assert out_html.exists()
+    body = out_html.read_text()
+    # Two embedded karyotype figures + one header-fish PNG = 3
+    assert body.count("data:image/png;base64,") == 3
+    assert 'id="fig-karyotype-genome"' in body
+    assert 'id="fig-karyotype-per-chrom"' in body
+
+
+def test_mosdepth_plus_vcf_dispatches_to_karyotype(tmp_path, tiny_regions):
+    """Both flags: karyotype mode wins; VCF goes into the BAF panel.
+
+    Pass a VCF with no SV/CSQ/PS headers. If the dispatch tried to
+    run :func:`detect_vcf_mode` on it the CLI would exit 1; a clean
+    exit-0 proves karyotype dispatch intercepted before VCF header
+    inspection.
+    """
+    vcf = tmp_path / "no_signal.vcf"
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+    )
+    rc = mm.main([
+        "--mosdepth", str(tiny_regions),
+        "--vcf", str(vcf),
+        "--reference", "hg38",
+        "--no-mask", "--no-gc",
+        "--out", str(tmp_path),
+    ])
+    assert rc == 0
+    body = (tmp_path / "tiny_regions.karyotype.report.html").read_text()
+    assert vcf.name in body
 
 
 def test_neither_input_flag_returns_2(capsys):

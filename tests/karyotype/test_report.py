@@ -1,0 +1,104 @@
+"""End-to-end tests for the karyotype HTML report."""
+
+from __future__ import annotations
+
+import matplotlib
+matplotlib.use("Agg")
+
+import molamola as mm
+
+
+def test_karyotype_report_full_run_renders_html(tmp_path, tiny_regions):
+    rc = mm.main([
+        "--mosdepth", str(tiny_regions),
+        "--reference", "hg38",
+        "--no-mask", "--no-gc",
+        "--out", str(tmp_path),
+    ])
+    assert rc == 0
+    out_html = tmp_path / "tiny_regions.karyotype.report.html"
+    assert out_html.exists()
+    body = out_html.read_text()
+    assert "<title>molamola karyotype" in body
+    assert "inferred genomic sex" in body
+    assert "scatter bin" in body
+    assert "smooth: 0.5 Mb" in body
+    assert "mask: off" in body
+    assert "GC: off" in body
+
+
+def test_karyotype_report_with_baf_includes_baf_chip(
+    tmp_path, tiny_regions, tiny_baf,
+):
+    rc = mm.main([
+        "--mosdepth", str(tiny_regions),
+        "--vcf", str(tiny_baf),
+        "--reference", "hg38",
+        "--no-mask", "--no-gc",
+        "--out", str(tmp_path),
+    ])
+    assert rc == 0
+    body = (tmp_path / "tiny_regions.karyotype.report.html").read_text()
+    assert tiny_baf.name in body
+    assert "het sites" in body
+
+
+def test_karyotype_report_png_flag_writes_standalone_pngs(
+    tmp_path, tiny_regions,
+):
+    rc = mm.main([
+        "--mosdepth", str(tiny_regions),
+        "--reference", "hg38",
+        "--no-mask", "--no-gc",
+        "--png",
+        "--out", str(tmp_path),
+    ])
+    assert rc == 0
+    assert (tmp_path / "tiny_regions.karyotype.report.html").exists()
+    genome = tmp_path / "tiny_regions.karyotype.genome.png"
+    per_chrom = tmp_path / "tiny_regions.karyotype.per_chrom.png"
+    assert genome.exists()
+    assert per_chrom.exists()
+    assert genome.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    assert per_chrom.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_karyotype_report_sample_override(tmp_path, tiny_regions):
+    rc = mm.main([
+        "--mosdepth", str(tiny_regions),
+        "--reference", "hg38",
+        "--no-mask", "--no-gc",
+        "--sample", "MYSAMPLE",
+        "--out", str(tmp_path),
+    ])
+    assert rc == 0
+    out_html = tmp_path / "MYSAMPLE.karyotype.report.html"
+    assert out_html.exists()
+
+
+def test_karyotype_report_sex_override(tmp_path, tiny_regions):
+    rc = mm.main([
+        "--mosdepth", str(tiny_regions),
+        "--reference", "hg38",
+        "--no-mask", "--no-gc",
+        "--sex", "female",
+        "--out", str(tmp_path),
+    ])
+    assert rc == 0
+    body = (tmp_path / "tiny_regions.karyotype.report.html").read_text()
+    assert "inferred genomic sex: female" in body
+
+
+def test_karyotype_report_reference_mismatch_refused(tmp_path, tmp_path_factory):
+    """Filename hints t2t but --reference hg38 -> exit 2 without --force."""
+    import gzip
+    bed = tmp_path / "sample.t2t.regions.bed.gz"
+    with gzip.open(bed, "wt") as fh:
+        fh.write("chr1\t0\t1000000\t30\n")
+    rc = mm.main([
+        "--mosdepth", str(bed),
+        "--reference", "hg38",
+        "--no-mask", "--no-gc",
+        "--out", str(tmp_path),
+    ])
+    assert rc == 2
