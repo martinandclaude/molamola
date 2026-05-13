@@ -155,10 +155,9 @@ def test_read_baf_skips_symbolic_alt(tmp_path):
     assert df["pos"].iloc[0] == 1000
 
 
-def test_read_baf_skips_oversize_alt(tmp_path):
-    """ALT longer than _KARY_BAF_MAX_ALT_LEN bp is silently skipped."""
-    long_alt = "A" * (mm._KARY_BAF_MAX_ALT_LEN + 1)
-    vcf = tmp_path / "with_oversize.vcf"
+def test_read_baf_skips_indel_records(tmp_path):
+    """REF or ALT longer than 1 nt -> skipped (SNV-only by design)."""
+    vcf = tmp_path / "with_indel.vcf"
     vcf.write_text(
         "##fileformat=VCFv4.2\n"
         "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n"
@@ -166,10 +165,90 @@ def test_read_baf_skips_oversize_alt(tmp_path):
         "##FORMAT=<ID=AF,Number=A,Type=Float,Description=\"AF\">\n"
         "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
         "chr1\t1000\t.\tA\tT\t30\tPASS\t.\tGT:DP:AF\t0/1:30:0.5\n"
-        f"chr1\t2000\t.\tA\t{long_alt}\t30\tPASS\t.\tGT:DP:AF\t0/1:30:0.5\n"
-        # 50 bp is the cap; exactly 50 should be kept
-        f"chr1\t3000\t.\tA\t{'C' * mm._KARY_BAF_MAX_ALT_LEN}\t30\tPASS\t.\tGT:DP:AF\t0/1:30:0.45\n"
+        # 1-base insertion (REF=A, ALT=AT) -> indel, skip
+        "chr1\t2000\t.\tA\tAT\t30\tPASS\t.\tGT:DP:AF\t0/1:30:0.45\n"
+        # 1-base deletion (REF=AT, ALT=A) -> indel, skip
+        "chr1\t3000\t.\tAT\tA\t30\tPASS\t.\tGT:DP:AF\t0/1:30:0.55\n"
+        # Larger indel -> skip
+        "chr1\t4000\t.\tA\tAAAAAAAAAA\t30\tPASS\t.\tGT:DP:AF\t0/1:30:0.5\n"
+        # Another SNV is kept
+        "chr1\t5000\t.\tC\tG\t30\tPASS\t.\tGT:DP:AF\t0/1:30:0.48\n"
     )
     df = mm.read_baf_vcf(vcf, min_dp=10)
     assert len(df) == 2
-    assert list(df["pos"]) == [1000, 3000]
+    assert list(df["pos"]) == [1000, 5000]
+
+
+def test_read_baf_skips_multi_nt_alt(tmp_path):
+    """Multi-allele ALT with any non-SNV entry -> skipped."""
+    vcf = tmp_path / "with_multi_alt.vcf"
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n"
+        "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Depth\">\n"
+        "##FORMAT=<ID=AF,Number=A,Type=Float,Description=\"AF\">\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+        # Two-allele SNV+indel -> skipped (the AT branch is an indel)
+        "chr1\t1000\t.\tA\tT,AT\t30\tPASS\t.\tGT:DP:AF\t0/1:30:0.4\n"
+        "chr1\t2000\t.\tC\tG\t30\tPASS\t.\tGT:DP:AF\t0/1:30:0.5\n"
+    )
+    df = mm.read_baf_vcf(vcf, min_dp=10)
+    assert len(df) == 1
+    assert int(df["pos"].iloc[0]) == 2000
+
+
+def test_read_baf_skips_low_gq_records(tmp_path):
+    """GQ below the threshold -> skipped (when GQ is present)."""
+    vcf = tmp_path / "with_gq.vcf"
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n"
+        "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Depth\">\n"
+        "##FORMAT=<ID=GQ,Number=1,Type=Integer,Description=\"GQ\">\n"
+        "##FORMAT=<ID=AF,Number=A,Type=Float,Description=\"AF\">\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+        # GQ=10 (below default 20) -> skipped
+        "chr1\t1000\t.\tA\tT\t30\tPASS\t.\tGT:DP:GQ:AF\t0/1:30:10:0.5\n"
+        # GQ=25 (above) -> kept
+        "chr1\t2000\t.\tC\tG\t30\tPASS\t.\tGT:DP:GQ:AF\t0/1:30:25:0.48\n"
+        # GQ='.' (missing entry) -> kept (no filter applies)
+        "chr1\t3000\t.\tG\tA\t30\tPASS\t.\tGT:DP:GQ:AF\t0/1:30:.:0.51\n"
+        # GQ=20 exactly (==threshold) -> kept
+        "chr1\t4000\t.\tT\tC\t30\tPASS\t.\tGT:DP:GQ:AF\t0/1:30:20:0.49\n"
+    )
+    df = mm.read_baf_vcf(vcf, min_dp=10)
+    assert list(df["pos"]) == [2000, 3000, 4000]
+
+
+def test_read_baf_gq_filter_skipped_when_format_absent(tmp_path):
+    """A VCF without FORMAT/GQ should still produce a BAF panel
+    (Clair3 always emits GQ but some callers don't)."""
+    vcf = tmp_path / "no_gq.vcf"
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n"
+        "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Depth\">\n"
+        "##FORMAT=<ID=AF,Number=A,Type=Float,Description=\"AF\">\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+        "chr1\t1000\t.\tA\tT\t30\tPASS\t.\tGT:DP:AF\t0/1:30:0.5\n"
+        "chr1\t2000\t.\tC\tG\t30\tPASS\t.\tGT:DP:AF\t0/1:30:0.45\n"
+    )
+    df = mm.read_baf_vcf(vcf, min_dp=10, min_gq=20)
+    assert len(df) == 2
+
+
+def test_read_baf_custom_min_gq(tmp_path):
+    """`min_gq` is honoured: a stricter setting drops more records."""
+    vcf = tmp_path / "stricter_gq.vcf"
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n"
+        "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Depth\">\n"
+        "##FORMAT=<ID=GQ,Number=1,Type=Integer,Description=\"GQ\">\n"
+        "##FORMAT=<ID=AF,Number=A,Type=Float,Description=\"AF\">\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+        "chr1\t1000\t.\tA\tT\t30\tPASS\t.\tGT:DP:GQ:AF\t0/1:30:30:0.50\n"
+        "chr1\t2000\t.\tC\tG\t30\tPASS\t.\tGT:DP:GQ:AF\t0/1:30:45:0.48\n"
+    )
+    assert len(mm.read_baf_vcf(vcf, min_dp=10, min_gq=20)) == 2
+    assert len(mm.read_baf_vcf(vcf, min_dp=10, min_gq=40)) == 1

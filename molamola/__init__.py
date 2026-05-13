@@ -898,14 +898,10 @@ def _parse_baf(format_kv: dict[str, str]) -> float | None:
     return None
 
 
-#: Per-allele literal-ALT length cap for BAF parsing. Above this size
-#: a record is treated as non-SNV/indel (likely STR repeat track or
-#: oversized event) and silently skipped. Matches molamola's existing
-#: 50 bp "small variant" boundary (see ``--min-svlen`` rationale).
-_KARY_BAF_MAX_ALT_LEN: int = 50
+_KARY_SNV_BASES: frozenset[str] = frozenset({"A", "C", "G", "T", "a", "c", "g", "t"})
 
 
-def read_baf_vcf(path: Path, min_dp: int) -> pd.DataFrame:
+def read_baf_vcf(path: Path, min_dp: int, min_gq: int = 20) -> pd.DataFrame:
     """Stream het allele fractions from a small-variant VCF as plain text.
 
     No bcftools dependency; reads gzipped or plain VCF via the
@@ -925,10 +921,16 @@ def read_baf_vcf(path: Path, min_dp: int) -> pd.DataFrame:
     - ``FILTER == "PASS"``
     - ``ALT`` not symbolic (no leading ``<``) -- skips ``<DEL>``,
       ``<DUP>``, ``<STR>``, BND notation, etc.
-    - every literal ``ALT`` allele <= 50 bp -- skips STR repeat-track
-      ALTs and oversized indels.
+    - ``REF`` and every literal ``ALT`` allele is a single
+      nucleotide (``{A, C, G, T}``) -- skips indels and STR repeat
+      tracks. Indel-het AF is noisier than SNV-het AF on ONT data
+      (alignment ambiguity around the breakpoint inflates the
+      estimate), and the BAF panel reads more cleanly with SNVs
+      only. Strict superset of the prior "<= 50 bp" cap.
     - heterozygous biallelic GT (``0/1``, ``1/0``, ``0|1``, ``1|0``)
     - ``FORMAT/DP >= min_dp``
+    - ``FORMAT/GQ >= min_gq`` when GQ is present; skipped when the
+      VCF does not emit GQ (some callers don't).
     - chrom in :data:`CHROM_ORDER` (canonical chr1-22, chrX, chrY)
 
     The BAF value is taken from ``FORMAT/AF`` if present, otherwise
@@ -962,10 +964,17 @@ def read_baf_vcf(path: Path, min_dp: int) -> pd.DataFrame:
                 continue
             if f[6] != "PASS":
                 continue
+            ref = f[3]
             alt = f[4]
             if alt.startswith("<"):
                 continue
-            if any(len(a) > _KARY_BAF_MAX_ALT_LEN for a in alt.split(",")):
+            # SNV-only: REF and every ALT allele must be a single
+            # canonical base. Catches all indels (incl. the 50bp+
+            # STR/indel cases the prior cap covered).
+            if len(ref) != 1 or ref not in _KARY_SNV_BASES:
+                continue
+            if any(len(a) != 1 or a not in _KARY_SNV_BASES
+                   for a in alt.split(",")):
                 continue
             format_keys = f[8].split(":")
             sample_vals = f[9].split(":")
@@ -978,6 +987,16 @@ def read_baf_vcf(path: Path, min_dp: int) -> pd.DataFrame:
                 continue
             if dp < min_dp:
                 continue
+            # GQ: filter when present (matches Clair3 / DeepVariant
+            # / GATK output). Skipped when absent so callers that
+            # don't emit it still produce a BAF panel.
+            gq_raw = kv.get("GQ")
+            if gq_raw not in (None, "", "."):
+                try:
+                    if int(float(gq_raw)) < min_gq:
+                        continue
+                except ValueError:
+                    continue
             baf = _parse_baf(kv)
             if baf is None:
                 continue
@@ -4239,6 +4258,12 @@ def _add_karyotype_args(p) -> None:
              "Default 10.",
     )
     p.add_argument(
+        "--min-baf-gq", type=int, default=20,
+        help="minimum FORMAT/GQ for a het site to enter the BAF panel. "
+             "Applied only when GQ is present in the VCF (some callers "
+             "don't emit it). Default 20.",
+    )
+    p.add_argument(
         "--ymax", type=float, default=5.0,
         help="upper limit for the CN axis. Default 5.0.",
     )
@@ -4876,15 +4901,20 @@ def karyotype_main(args: argparse.Namespace) -> int:
     if args.vcf is not None:
         print(f"reading BAF VCF: {args.vcf}")
         try:
-            baf_df = read_baf_vcf(args.vcf, min_dp=args.min_baf_dp)
+            baf_df = read_baf_vcf(
+                args.vcf,
+                min_dp=args.min_baf_dp,
+                min_gq=args.min_baf_gq,
+            )
         except ValueError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             return 1
         baf_source = args.vcf.name
         n_baf_sites = len(baf_df)
         print(
-            f"[info] BAF: {n_baf_sites:,} PASS het sites "
-            f"with DP>={args.min_baf_dp}",
+            f"[info] BAF: {n_baf_sites:,} PASS het SNV sites "
+            f"with DP>={args.min_baf_dp}, "
+            f"GQ>={args.min_baf_gq} (when present)",
         )
 
     print("rendering genome-wide figure")
