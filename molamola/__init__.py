@@ -4078,8 +4078,11 @@ def _add_common_args(p) -> None:
                         "only). Activates karyotype coverage mode. "
                         "Required unless --vcf is given.")
     p.add_argument("--out", default=None, type=Path,
-                   help="output directory (default: parent directory of "
-                        "the input file)")
+                   help="output directory (required). molamola exits 2 "
+                        "with a clear usage error if this flag is omitted, "
+                        "rather than silently writing the report next "
+                        "to the input file. The directory is created if "
+                        "it does not exist.")
     p.add_argument(
         "--reference",
         choices=list(SUPPORTED_REFERENCES),
@@ -4931,6 +4934,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.mosdepth is None and args.vcf is None:
         print("ERROR: either --vcf or --mosdepth is required",
               file=sys.stderr)
+        return 2
+    if args.out is None:
+        print(
+            "ERROR: --out is required. Pass --out <directory> "
+            "to choose where the HTML report (and any --png "
+            "figures) land.",
+            file=sys.stderr,
+        )
         return 2
     if args.mosdepth is not None:
         return karyotype_main(args)

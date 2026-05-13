@@ -70,14 +70,21 @@ def test_html_report_no_event_tables(tiny_vcf, tmp_path):
     assert "Non-BND SV events" not in text
 
 
-def test_html_report_default_out_is_vcf_parent(tiny_vcf, tmp_path):
-    """Without `--out`, the report lands next to the input VCF."""
-    # Copy the VCF into tmp_path so the parent dir is tmp_path.
+def test_html_report_refuses_missing_out(tiny_vcf, tmp_path, capsys):
+    """Without `--out`, molamola exits 2 with a clear usage error.
+
+    Earlier versions silently defaulted to the parent directory of
+    the input file. That was changed (per Martin's 2026-05-12 ask)
+    to a hard refusal so reports never land in surprising places.
+    """
     vcf_copy = tmp_path / "sample.sniffles.vcf"
     vcf_copy.write_bytes(tiny_vcf.read_bytes())
     rc = mm.main(["--vcf", str(vcf_copy)])
-    assert rc == 0
-    assert (tmp_path / "sample.sniffles.report.html").exists()
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--out is required" in err
+    # The fallback path must not have been used.
+    assert not (tmp_path / "sample.sniffles.report.html").exists()
 
 
 def test_html_report_escapes_html_specials(tiny_vcf, tmp_path):

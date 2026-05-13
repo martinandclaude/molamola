@@ -41,26 +41,26 @@ pytest -v
 
 ```sh
 # Long-read SV VCF (Sniffles2 etc.) → cytogenetics report
-molamola --vcf sample.sniffles.vcf
-open path/to/sample.report.html
+molamola --vcf sample.sniffles.vcf --out reports/
+open reports/sample.report.html
 
 # Phased + VEP-annotated VCF → compound-het workup, all candidate genes
-molamola --vcf sample.phased.vep.vcf.gz
-open path/to/sample.compound_het.report.html
+molamola --vcf sample.phased.vep.vcf.gz --out reports/
+open reports/sample.compound_het.report.html
 
 # Just one gene from a phased + VEP VCF
-molamola --vcf sample.phased.vep.vcf.gz --gene NEB
+molamola --vcf sample.phased.vep.vcf.gz --gene NEB --out reports/
 
 # Mosdepth output → karyotype coverage report (genome-wide CN)
-molamola --mosdepth sample.regions.bed.gz --reference hg38
-open path/to/sample.karyotype.report.html
+molamola --mosdepth sample.regions.bed.gz --reference hg38 --out reports/
+open reports/sample.karyotype.report.html
 
 # Add a BAF panel beneath the genome-wide CN scatter
 molamola --mosdepth sample.regions.bed.gz --vcf sample.phased.vcf.gz \
-         --reference hg38
+         --reference hg38 --out reports/
 ```
 
-Either `--vcf` or `--mosdepth` is required. With `--vcf`, the plot mode is auto-detected from the VCF header (`##INFO=<ID=SVTYPE>` → SV; `##INFO=<ID=CSQ>` + `##FORMAT=<ID=PS>` → compound-het; otherwise refused). With `--mosdepth`, karyotype coverage mode runs and any accompanying `--vcf` is used as the BAF source. Karyotype mode expects uniform-bin mosdepth runs (`mosdepth --by <int>`).
+Either `--vcf` or `--mosdepth` is required; `--out <directory>` is required too (molamola refuses rather than silently writing the report next to the input file). With `--vcf`, the plot mode is auto-detected from the VCF header (`##INFO=<ID=SVTYPE>` → SV; `##INFO=<ID=CSQ>` + `##FORMAT=<ID=PS>` → compound-het; otherwise refused). With `--mosdepth`, karyotype coverage mode runs and any accompanying `--vcf` is used as the BAF source. Karyotype mode expects uniform-bin mosdepth runs (`mosdepth --by <int>`).
 
 See the [docs](https://martinandclaude.github.io/molamola/) for example output, VEP annotation prep, the full CLI reference, filter explanations, and worked examples.
 

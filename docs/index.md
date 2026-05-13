@@ -30,7 +30,7 @@ conda create -n molamola -c bioconda -c conda-forge molamola
 ## Quick start
 
 ```sh
-molamola --vcf sample.vcf
+molamola --vcf sample.vcf --out reports/
 ```
 
 The plot type is auto-detected. Output is a single self-contained
@@ -111,8 +111,8 @@ vep --input_file sample.phased.vcf \
     --force_overwrite
 ```
 
-Then `molamola --vcf sample.phased.vep.vcf` picks it up as
-compound-het mode.
+Then `molamola --vcf sample.phased.vep.vcf --out reports/` picks
+it up as compound-het mode.
 
 **Notes on VEP.** VEP is third-party software (Ensembl); molamola
 does not bundle or wrap it. The cache release and VEP binary

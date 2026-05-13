@@ -19,6 +19,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ### Changed
 
 - **`--vcf` is no longer required** when `--mosdepth` is given. The CLI now needs either `--vcf` or `--mosdepth`; both may be combined to add a BAF panel to the karyotype figure. When `--mosdepth` is set, karyotype mode runs and any accompanying `--vcf` is consumed only as the BAF source — VCF-header-based dispatch is skipped.
+- **`--out <directory>` is now required** for every mode (SV, compound-het, karyotype). Previously molamola silently defaulted the output directory to the parent of the input file; the new behaviour is to exit 2 with a clear usage error if `--out` is omitted, consistent with molamola's "refuse rather than render misleading data" rule. The directory is created if it does not exist.
 - `build_argparser()` gains a third `add_argument_group` ("Karyotype-mode flags") so `--help` shows SV / compound-het / karyotype flag groups side-by-side.
 - Bundled-data total grows from ~14 MB to ~28 MB (the new exclusion masks + 10 kb GC tables).
 

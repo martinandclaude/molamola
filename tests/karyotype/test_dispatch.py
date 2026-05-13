@@ -72,6 +72,39 @@ def test_neither_input_flag_returns_2(capsys):
     assert "either --vcf or --mosdepth is required" in err
 
 
+def test_missing_out_returns_2_karyotype(capsys, tiny_regions):
+    """``--mosdepth`` without ``--out`` -> exit 2 with a usage error."""
+    rc = mm.main(["--mosdepth", str(tiny_regions), "--reference", "hg38"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--out is required" in err
+
+
+def test_missing_out_returns_2_sv(capsys, tiny_vcf):
+    """``--vcf`` without ``--out`` -> exit 2 with a usage error
+    (header dispatch is skipped because main() bails earlier)."""
+    rc = mm.main(["--vcf", str(tiny_vcf)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--out is required" in err
+
+
+def test_typo_flag_rejected(capsys, tiny_regions, tmp_path):
+    """A misspelled flag (e.g. ``--pgn`` for ``--png``) is rejected."""
+    with pytest.raises(SystemExit) as excinfo:
+        mm.main([
+            "--mosdepth", str(tiny_regions),
+            "--reference", "hg38",
+            "--out", str(tmp_path),
+            "--pgn",  # typo for --png
+        ])
+    # argparse exits 2 for usage errors
+    assert excinfo.value.code == 2
+    err = capsys.readouterr().err
+    assert "unrecognized arguments" in err
+    assert "--pgn" in err
+
+
 def test_vcf_alone_still_dispatches_to_sv(tmp_path, tiny_vcf):
     """Existing SV-mode dispatch is unchanged when ``--mosdepth`` is absent."""
     rc = mm.main(["--vcf", str(tiny_vcf), "--out", str(tmp_path)])
