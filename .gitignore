@@ -5,6 +5,10 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+# Build artefacts (setuptools + twine outputs)
+build/
+dist/
+
 # Environments
 .venv/
 .conda/
