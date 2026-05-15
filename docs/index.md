@@ -3,16 +3,21 @@
 # molamola
 
 A Python plotting tool for Oxford Nanopore variation data.
-**One VCF in, one self-contained HTML report out.**
+**One input in, one self-contained HTML report out.**
 
-molamola inspects the VCF header and picks the right plot type
-automatically — no flags or subcommands to remember:
+molamola picks the right plot type from its input — VCF modes are
+auto-detected from the header, the karyotype mode is selected by
+the `--mosdepth` flag:
 
 - **SV / cytogenetics report** for long-read SV VCFs
   (Sniffles2, cuteSV, SVIM, pbsv, NanoVar).
 - **Per-gene phased-haplotype panels** for compound-het workup
   from phased + VEP-annotated small-variant VCFs
   (WhatsHap, HiPhase).
+- **Karyotype coverage report** for a mosdepth `regions.bed.gz`
+  (via `--mosdepth`) — genome-wide CN scatter + rolling-median
+  smooth, with an optional BAF panel beneath when paired with a
+  small-variant VCF.
 
 ## Install
 
@@ -31,11 +36,15 @@ conda create -n molamola -c bioconda -c conda-forge molamola
 
 ```sh
 molamola --vcf sample.vcf --out reports/
+# or, for a coverage karyotype:
+molamola --mosdepth sample.regions.bed.gz --reference hg38 --out reports/
 ```
 
-The plot type is auto-detected. Output is a single self-contained
-HTML report — figures embedded as base64, no external assets, opens
-offline.
+The plot type is picked from the input (VCF header, or `--mosdepth`
+for karyotype mode). `--out` is required — molamola refuses rather
+than silently writing the report next to the input file. Output is
+a single self-contained HTML report — figures embedded as base64,
+no external assets, opens offline.
 
 ## Example output
 

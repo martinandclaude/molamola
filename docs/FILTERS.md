@@ -1,5 +1,9 @@
 # Filters
 
+This page covers two distinct mechanisms: **SV-mode noise flags** (events stay in the report, just greyed) and **karyotype-mode QC** (bins / sites are dropped before plotting). The SV section comes first; jump to [Karyotype-mode QC](#karyotype-mode-qc) for the coverage / BAF rules.
+
+## SV-mode noise flags
+
 Each event in the VCF is checked against a few independent noise-flag rules. A flag does not drop the event from the output — flagged events still appear in the HTML report, but render greyed/dashed in the figures so the eye goes to the unflagged signal first.
 
 The directional sense of the **raise** / **lower** columns is consistent: raising a threshold makes the filter looser (fewer events flagged), lowering makes it stricter (more events flagged).
@@ -35,3 +39,38 @@ Non-BND SVs (INS / DEL / DUP / INV) shorter than `--min-svlen` (default 50 bp) a
 ### Focus window (`--focus-window`)
 
 When `--focus CHR:POS` is given, BNDs whose endpoints fall within `±--focus-window bp` of the requested coordinate are kept and the rest are filtered out for that figure.
+
+## Karyotype-mode QC
+
+Unlike the SV noise flags, these **drop** data before plotting — a masked bin or a failed BAF site is gone from the figure, not greyed. The intent is a clean CN / BAF surface for cytogenetic review rather than an exhaustive dump.
+
+### Coverage bins: exclusion mask + centromere pad
+
+Before CN is computed, every mosdepth bin is tested against the bundled exclusion mask (`--mask`, or `--no-mask` to disable) — the union of low-mappability regions and a polymorphic-TR catalog. Masked bins are dropped from the CN scatter, the rolling-median smooth, **and** the autosomal-median normalisation anchor (so a few residual high-copy repeats can't skew the CN 2.0 baseline). The mask is additionally widened by `--centromere-pad-kb` (default 1000) either side of every `acen` band, because centromeric depth stays unreliable on ONT even after the TR mask.
+
+Non-uniform mosdepth inputs are refused outright: molamola expects `mosdepth --by <int>` (a single fixed bin size). A `regions.bed.gz` from `--by some.bed` (variable-width target bins) exits 1 with a clear error rather than producing a meaningless aggregation.
+
+### GC correction (`--gc` / `--no-gc`)
+
+Depth is corrected by a per-1 % GC-bucket median ratio (bundled 10 kb GC table) before normalisation. This is a mild correction on well-prepared ONT data; `--no-gc` disables it. It is not a filter (no bins are dropped) but it shapes the CN values, so it is listed here for completeness.
+
+### BAF sites (only when `--vcf` is given)
+
+The optional BAF panel needs a small-variant VCF. The whole input is refused upfront if its header carries `##INFO=<ID=SVTYPE,...>` — that catches an SV / CNV / BND VCF (Sniffles2 / cuteSV / SVIM / pbsv / NanoVar / Spectre / hificnv) passed by mistake; the error points at the small-variant call set instead.
+
+Each record then has to pass, or it is silently skipped:
+
+| rule | default | why |
+|---|---|---|
+| `FILTER == PASS` | — | only confident calls. |
+| biallelic het GT | — | BAF is only meaningful at heterozygous sites (`0/1`, `1/0`, `0\|1`, `1\|0`). |
+| SNV-only | — | `REF` and every `ALT` must be a single base. Indel-het AF is noisier on ONT (alignment ambiguity around the breakpoint inflates the estimate); the panel reads cleaner with SNVs only. Also drops symbolic `<...>` ALTs. |
+| `FORMAT/DP >= --min-baf-dp` | `10` | below ~10 reads the alt-fraction estimate is too noisy to place on the panel. |
+| `FORMAT/GQ >= --min-baf-gq` | `20` | de-facto floor for a confident het call across Clair3 / DeepVariant / GATK. Skipped when the VCF doesn't emit GQ. |
+| canonical chrom | — | chr1–22, X, Y only. |
+
+Raising `--min-baf-dp` or `--min-baf-gq` thins the panel to higher-confidence sites; lowering them (e.g. `--min-baf-dp 5 --min-baf-gq 0`) keeps more, at the cost of a noisier cloud. `--min-baf-gq 0` effectively disables the GQ filter.
+
+### Adaptive-sampling detection (informational, not a filter)
+
+If more than 5 % of autosomal non-masked bins sit above 5× the autosomal median, the depth distribution is treated as bimodal (adaptive-sampling-like) and an **"AS suspected"** chip is added to the run-metadata, plus a one-line stderr warning. Nothing is dropped — but CN is anchored on the autosomal median, which on an AS sample sits at the off-target background, so the CN scale is biased. Stratum-aware AS normalisation is a future feature; for now the flag is a read-with-care signal.

@@ -141,7 +141,7 @@ Tune via `--min-pair-count N` (raise for stricter sweeps) and `--max-genes N` (d
 
 ### Override ClinVar with a fresher snapshot
 
-The bundled ClinVar (`molamola/data/clinvar.hg38.tsv.xz`, ~13 MB) is dated; pass a fresher copy with `--clinvar`:
+The bundled ClinVar (`molamola/data/clinvar.hg38.tsv.xz`, ~12 MB) is dated; pass a fresher copy with `--clinvar`:
 
 ```sh
 # Reduced TSV (smallest)
@@ -163,6 +163,65 @@ molamola --vcf sample.phased.vep.vcf.gz --out reports/ \
 ```
 
 Schema: `gene_symbol\tchrom\tstart\tend\tstrand\ttranscript_id\texon_starts\texon_ends` (gzipped TSV; comma-separated exon coords; 0-based half-open).
+
+## Karyotype coverage
+
+Karyotype mode is selected by `--mosdepth`, not by a VCF header. The input is a mosdepth `regions.bed.gz` from a **uniform-bin** run — generate it with a single fixed bin size:
+
+```sh
+mosdepth --by 1000 --no-per-base --fast-mode sample sample.bam
+# → sample.regions.bed.gz
+```
+
+### Genome-wide CN (no BAF)
+
+```sh
+molamola --mosdepth sample.regions.bed.gz --reference hg38 --out reports/
+```
+
+### Add a BAF panel from a small-variant VCF
+
+Pair with a phased / unphased **small-variant** VCF (Clair3 / DeepVariant — *not* an SV or CNV VCF; those are refused):
+
+```sh
+molamola --mosdepth sample.regions.bed.gz \
+    --vcf sample.clair3.vcf.gz \
+    --reference hg38 --out reports/
+```
+
+The VCF is consumed only as the BAF source — its header shape is not used for dispatch. A BAF panel renders beneath the CN scatter, sharing the x-axis.
+
+### T2T-CHM13v2.0
+
+```sh
+molamola --mosdepth sample.t2t.regions.bed.gz --reference t2t --out reports/
+```
+
+### Loosen / tighten the BAF QC
+
+```sh
+# keep more (noisier) het sites
+molamola --mosdepth sample.regions.bed.gz --vcf sample.clair3.vcf.gz \
+    --min-baf-dp 5 --min-baf-gq 0 --reference hg38 --out reports/
+```
+
+### Disable the mask / GC correction
+
+```sh
+molamola --mosdepth sample.regions.bed.gz \
+    --no-mask --no-gc --reference hg38 --out reports/
+```
+
+Useful as a diagnostic when you want to see the raw coverage shape without molamola's exclusion mask or GC correction applied.
+
+### Heavier smoothing, coarser scatter
+
+```sh
+molamola --mosdepth sample.regions.bed.gz --reference hg38 --out reports/ \
+    --smooth-window-mb 1.0 --scatter-bin-kb 100 --ymax 4
+```
+
+If the run-metadata shows an **"AS suspected"** chip, the sample looks like adaptive sampling and the CN scale is biased (anchored on the off-target background) — interpret the CN axis with care.
 
 ## Verify a VCF before plotting
 
