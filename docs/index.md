@@ -60,8 +60,9 @@ separately here for clarity.
 22 autosomes plus X and Y arranged around the disc, with greyscale
 ISCN cytobands on the rim. Each ribbon across the disc is a BND
 (translocation or large rearrangement); ribbon colour encodes VAF
-(purple = low → yellow = high, plasma colormap). At-a-glance view
-for inter-chromosomal events.
+as one of three discrete classes -- mosaic (0-33 %), het (33-66 %),
+hom (66-100 %) -- rather than a continuous ramp, so the bands are
+separable at a glance. At-a-glance view for inter-chromosomal events.
 
 ### Linear genome map
 

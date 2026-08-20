@@ -29,6 +29,94 @@ def test_parse_alt_for_mate_invalid_raises(alt):
         mm.parse_alt_for_mate(alt)
 
 
+# The leading base in the base-then-bracket forms is the real reference
+# base, not a literal "N" - Sniffles2 >=2.8 and DRAGEN both write it that
+# way. Parsing these as anything but the N-form orientation silently drops
+# roughly half of every BND set.
+@pytest.mark.parametrize("base", ["A", "C", "G", "T", "N", "a", "c", "g", "t", "n"])
+@pytest.mark.parametrize(
+    "template, expected_ori",
+    [("{b}[chr2:50000[", "++"), ("{b}]chr2:50000]", "+-")],
+)
+def test_parse_alt_for_mate_any_ref_base(base, template, expected_ori):
+    alt = template.format(b=base)
+    assert mm.parse_alt_for_mate(alt) == ("chr2", 50000, expected_ori)
+
+
+@pytest.mark.parametrize("base", ["A", "C", "G", "T", "N", "a", "n"])
+@pytest.mark.parametrize(
+    "template, expected_ori",
+    [("[chr2:50000[{b}", "-+"), ("]chr2:50000]{b}", "--")],
+)
+def test_parse_alt_for_mate_bracket_first_any_base(base, template, expected_ori):
+    alt = template.format(b=base)
+    assert mm.parse_alt_for_mate(alt) == ("chr2", 50000, expected_ori)
+
+
+# Callers may report inserted sequence at the breakpoint; the replacement
+# string is not limited to a single base.
+@pytest.mark.parametrize(
+    "alt, expected",
+    [
+        ("GTTTT[chr2:50000[", ("chr2", 50000, "++")),
+        ("GTTTT]chr2:50000]", ("chr2", 50000, "+-")),
+        ("[chr2:50000[GTTTT", ("chr2", 50000, "-+")),
+        ("]chr2:50000]GTTTT", ("chr2", 50000, "--")),
+    ],
+)
+def test_parse_alt_for_mate_multibase_replacement(alt, expected):
+    assert mm.parse_alt_for_mate(alt) == expected
+
+
+def test_parse_alt_for_mate_contig_with_colons():
+    """Only the final ':' separates contig from position."""
+    assert mm.parse_alt_for_mate("G]HLA-A*01:01:01:01:12345]") == (
+        "HLA-A*01:01:01:01", 12345, "+-",
+    )
+
+
+@pytest.mark.parametrize(
+    "alt",
+    [
+        "[chr2:50000[",       # no replacement sequence on either side
+        "A[chr2:50000[T",     # replacement sequence on both sides
+        "N[chr2:notapos[",    # non-numeric position
+        "",
+    ],
+)
+def test_parse_alt_for_mate_malformed_raises(alt):
+    with pytest.raises(ValueError):
+        mm.parse_alt_for_mate(alt)
+
+
+def test_read_vcf_keeps_real_ref_base_bnds(tmp_path):
+    """End-to-end guard: a real-ref-base BND must not vanish from read_vcf.
+
+    _build_event swallows ValueError from parse_alt_for_mate and returns
+    None, so a parser regression here is silent - no warning, the record
+    just disappears from the report.
+    """
+    vcf = tmp_path / "realbase_bnd.vcf"
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##source=Sniffles2_2.8.0\n"
+        "##INFO=<ID=SVTYPE,Number=1,Type=String,Description=\"SV type\">\n"
+        "##contig=<ID=chr1,length=248956422>\n"
+        "##contig=<ID=chr16,length=90338345>\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n"
+        "chr1\t1000\tbnd_a\tG\tG]chr16:12345]\t60\tPASS\t"
+        "SVTYPE=BND;SUPPORT=10;VAF=0.5\tGT\t0/1\n"
+        "chr1\t2000\tbnd_b\tA\tA[chr16:22345[\t60\tPASS\t"
+        "SVTYPE=BND;SUPPORT=10;VAF=0.5\tGT\t0/1\n"
+        "chr1\t3000\tbnd_c\tN\t]chr16:32345]N\t60\tPASS\t"
+        "SVTYPE=BND;SUPPORT=10;VAF=0.5\tGT\t0/1\n"
+    )
+    _contigs, bnds, _svs, _cov = mm.read_vcf(vcf, caller="sniffles2")
+    assert len(bnds) == 3
+    assert {b.sv_id for b in bnds} == {"bnd_a", "bnd_b", "bnd_c"}
+    assert {b.orientation for b in bnds} == {"+-", "++", "--"}
+
+
 # --- parse_info -------------------------------------------------------------
 
 def test_parse_info_basic():

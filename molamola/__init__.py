@@ -33,7 +33,7 @@ rather than silently producing a default plot.
 
 from __future__ import annotations
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 import argparse
 import base64
@@ -47,6 +47,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
@@ -114,14 +115,69 @@ SV_TYPE_COLOR: dict[str, str] = {
 #: repeat-collapse rather than a true event.
 SV_COV_FILTER_TYPES: tuple[str, ...] = ("DEL", "DUP")
 
-#: VAF colorbar limits. Maps the full [0, 1] VAF range across the
-#: plasma colormap. Combined with PASS filtering, acrocentric flagging,
-#: and cov-anomaly detection, the surviving BNDs are mostly real
-#: events whose true VAF (subgermline -> mosaic -> het -> hom) is
-#: information worth surfacing directly.
+#: VAF is rendered as three discrete classes, not a continuous ramp.
+#: A linear [0, 1] ramp crowds the bulk of a typical ONT call set into
+#: one narrow stretch of colour that is not separable at 1 px
+#: linewidth. Even thirds keep the scale trivially readable - a reader
+#: does not have to remember five boundaries - and land close enough
+#: to the biology to be useful: below a third reads as mosaic or
+#: subclonal, the middle third as heterozygous, the top third as
+#: homozygous.
+VAF_CLASS_EDGES: tuple[float, ...] = (0.0, 0.33, 0.66, 1.0)
+
+#: One colour per class, low to high. Every entry clears 3:1 contrast
+#: against the white plot background; plasma's yellow end managed only
+#: 1.6-2.0:1, which is what made the highest-VAF arcs - the rarest and
+#: most interesting ones - the hardest to see.
+VAF_CLASS_COLORS: tuple[str, ...] = (
+    "#5A189A",  # 0 - 33 %    mosaic / subclonal
+    "#C42A78",  # 33 - 66 %   het
+    "#B34A00",  # 66 - 100 %  hom
+)
+
+#: Class names, in the same order as :data:`VAF_CLASS_COLORS`. Used to
+#: annotate the colorbar so the scale is readable without a legend.
+VAF_CLASS_LABELS: tuple[str, ...] = ("mosaic", "het", "hom")
+
+#: Figure background. A hair off pure white: enough tone to give thin
+#: BND arcs and pale cytobands something to sit against, not enough to
+#: read as anything but a white page in print or in the HTML report.
+#: Shared with the karyotype palette, which specified it first.
+PAPER_BG: str = "#FAF8F4"
+
+#: Radii at which --plotvaf writes its per-arc percentage labels,
+#: just outside the cytoband ring (95-100) where there is clean space.
+#: Breakpoints cluster - a complex rearrangement puts several within a
+#: fraction of a degree - so labels are staggered across these rings
+#: rather than stacked on one, which is unreadable.
+VAF_LABEL_RADII: tuple[float, ...] = (102.0, 105.0, 108.0, 111.0)
+
+#: Sector name radius. Pushed outward when --plotvaf is on so the
+#: staggered labels have room; unchanged otherwise.
+SECTOR_NAME_R: float = 108.0
+SECTOR_NAME_R_WITH_VAF: float = 116.0
+
+#: Minimum separation between two labels sharing a ring, as a fraction
+#: of the plotted genome. Below this they overprint, so the next label
+#: moves to the next ring out. Sized from the rendered label width: at
+#: the label radius the rim is ~4,500 px around, so a ~30 px label
+#: spans roughly a 140th of the genome. Estimating this too small is
+#: what makes staggering look like it is not working.
+VAF_LABEL_MIN_SEP_FRAC: float = 1 / 140
+
+#: Above this many labelled arcs, --plotvaf warns that the circos is
+#: likely too crowded to read. Not a cap - the user asked for labels
+#: and gets them - just a heads-up that a panel-scale flag is being
+#: used on a genome-scale call set.
+VAF_LABEL_CROWDING_WARN: int = 60
+
 VAF_VMIN: float = 0.0
 VAF_VMAX: float = 1.0
-VAF_CMAP = plt.get_cmap("plasma")
+VAF_CMAP = mcolors.ListedColormap(VAF_CLASS_COLORS, name="molamola_vaf")
+
+#: Norm shared by :func:`vaf_to_color` and both colorbars, so the arcs
+#: and the scale they are read against can never drift apart.
+VAF_NORM = mcolors.BoundaryNorm(VAF_CLASS_EDGES, len(VAF_CLASS_COLORS))
 
 NOISE_COLOR: str = "#888888"
 
@@ -156,7 +212,7 @@ GC_MISSING: int = 255
 #: Karyotype-mode palette (Direction A "Paper"). Distinct from the
 #: SV-mode ISCN greyscale; applied per-call so matplotlib rcParams
 #: stay unchanged between modes.
-KARY_PAPER: str   = "#FAF8F4"
+KARY_PAPER: str   = PAPER_BG
 KARY_INK: str     = "#1F2024"
 KARY_INK_2: str   = "#5C5D63"
 KARY_INK_3: str   = "#9A9892"
@@ -538,19 +594,35 @@ class PhaseBlock:
 # VCF parsing
 # ---------------------------------------------------------------------------
 
+_BND_ALT_RE = re.compile(
+    r"^(?P<pre>[A-Za-z.*]*)"
+    r"(?P<bracket>[\[\]])"
+    r"(?P<chrom>.+):(?P<pos>\d+)"
+    r"(?P=bracket)"
+    r"(?P<post>[A-Za-z.*]*)$"
+)
+
+
 def parse_alt_for_mate(alt: str) -> tuple[str, int, str]:
     """Parse a VCF BND ALT bracket notation into mate position + orientation.
 
-    The four possible forms encode different join orientations:
+    The four possible forms encode different join orientations, where
+    ``t`` is the replacement sequence:
 
     ===================  ==================
     ALT                  orientation
     ===================  ==================
-    ``N[chr:pos[``       ``'++'``
-    ``N]chr:pos]``       ``'+-'``
-    ``[chr:pos[N``       ``'-+'``
-    ``]chr:pos]N``       ``'--'``
+    ``t[chr:pos[``       ``'++'``
+    ``t]chr:pos]``       ``'+-'``
+    ``[chr:pos[t``       ``'-+'``
+    ``]chr:pos]t``       ``'--'``
     ===================  ==================
+
+    Per the VCF spec ``t`` is an arbitrary base string, not a literal
+    ``N``: callers write the real reference base (``G]chr16:123]``),
+    and some emit multi-base inserted sequence at the breakpoint
+    (``GTTT[chr2:123[``). Matching is case-insensitive, and ``.`` is
+    accepted for the single-breakend forms.
 
     Parameters
     ----------
@@ -567,20 +639,17 @@ def parse_alt_for_mate(alt: str) -> tuple[str, int, str]:
     ValueError
         If ``alt`` does not match any of the four expected forms.
     """
-    s = alt.strip()
-    if s.startswith("N["):
-        chrm, pos = s[2:-1].split(":")
-        return chrm, int(pos), "++"
-    if s.startswith("N]"):
-        chrm, pos = s[2:-1].split(":")
-        return chrm, int(pos), "+-"
-    if s.startswith("["):
-        chrm, pos = s[1:-2].split(":")
-        return chrm, int(pos), "-+"
-    if s.startswith("]"):
-        chrm, pos = s[1:-2].split(":")
-        return chrm, int(pos), "--"
-    raise ValueError(f"unrecognized BND ALT: {alt!r}")
+    m = _BND_ALT_RE.match(alt.strip())
+    if m is None:
+        raise ValueError(f"unrecognized BND ALT: {alt!r}")
+    pre, post = m.group("pre"), m.group("post")
+    # The replacement sequence sits on exactly one side of the pair.
+    if bool(pre) == bool(post):
+        raise ValueError(f"unrecognized BND ALT: {alt!r}")
+    chrm, pos = m.group("chrom"), int(m.group("pos"))
+    if pre:
+        return chrm, pos, "++" if m.group("bracket") == "[" else "+-"
+    return chrm, pos, "-+" if m.group("bracket") == "[" else "--"
 
 
 def parse_info(info: str) -> dict:
@@ -2621,8 +2690,13 @@ def render_karyotype_genome_png(
         _kary_apply_tabular_numerics(ax_cov)
         _kary_align_panel_ylabels(ax_cov)
 
+    fig.set_facecolor(PAPER_BG)
+    for _ax in (ax_cov, ax_baf):
+        if _ax is not None:
+            _ax.set_facecolor(PAPER_BG)
+
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=200)
+    fig.savefig(buf, format="png", dpi=200, facecolor=fig.get_facecolor())
     plt.close(fig)
     return buf.getvalue(), scatter_bin_label
 
@@ -2911,10 +2985,31 @@ def support_to_lw(
     return lo + (hi - lo) * min(support / support_max, 1.0)
 
 
-def vaf_to_color(vaf: float, cmap=VAF_CMAP):
-    """Map a VAF in ``[0, 1]`` to an RGBA colour using the plasma cmap."""
-    v = (vaf - VAF_VMIN) / (VAF_VMAX - VAF_VMIN)
-    return cmap(min(max(v, 0.0), 1.0))
+def vaf_to_color(vaf: float, cmap=None):
+    """Map a VAF to an RGBA colour via the shared VAF cmap + norm."""
+    cmap = VAF_CMAP if cmap is None else cmap
+    return cmap(VAF_NORM(min(max(float(vaf), 0.0), 1.0)))
+
+
+def _style_vaf_colorbar(cb) -> None:
+    """Tick a VAF colorbar at the class edges and name each band.
+
+    Edges are labelled as percentages rather than fractions, and the
+    class name is written inside its band: the boundaries alone say
+    where the cuts are but not what they mean, and the name is what a
+    reader actually matches an arc against.
+    """
+    cb.set_ticks(list(VAF_CLASS_EDGES))
+    cb.set_ticklabels([f"{round(e * 100)} %" for e in VAF_CLASS_EDGES])
+    cb.ax.tick_params(labelsize=8)
+    mids = zip(VAF_CLASS_EDGES[:-1], VAF_CLASS_EDGES[1:], VAF_CLASS_LABELS)
+    for lo, hi, label in mids:
+        cb.ax.text(
+            0.5, (lo + hi) / 2.0, label,
+            ha="center", va="center", rotation=90,
+            fontsize=7.0, color="white",
+            transform=cb.ax.get_yaxis_transform(),
+        )
 
 
 def render_props(b: BND) -> tuple:
@@ -2935,6 +3030,65 @@ def render_props(b: BND) -> tuple:
 # A) Circos plot
 # ---------------------------------------------------------------------------
 
+def _draw_vaf_labels(circos, labels: list[tuple], contigs: dict) -> int:
+    """Place per-BND VAF percentage labels around the circos rim.
+
+    Breakpoints cluster, so labels are spread across the rings in
+    :data:`VAF_LABEL_RADII`: within a chromosome, each label goes on
+    the innermost ring whose last label is far enough away to not
+    overprint. Returns the number actually drawn.
+
+    Labels that still cannot be separated - more clustered breakpoints
+    than rings - are drawn anyway on the outermost ring rather than
+    dropped: silently omitting a breakpoint's VAF would be worse than
+    a crowded label the user can see and zoom into. The count of such
+    labels is returned so the caller can say so out loud.
+
+    Returns ``(n_drawn, n_crowded)``.
+    """
+    if not labels:
+        return 0, 0
+
+    total_bp = sum(contigs[c] for c in CHROM_ORDER if c in contigs) or 1
+    min_sep = total_bp * VAF_LABEL_MIN_SEP_FRAC
+
+    by_chrom: dict[str, list[tuple]] = {}
+    for chrom, pos, vaf, color, sv_id in labels:
+        by_chrom.setdefault(chrom, []).append((pos, vaf, color, sv_id))
+
+    n_drawn = 0
+    n_crowded = 0
+    for chrom, items in by_chrom.items():
+        last_pos_on_ring: list[float | None] = [None] * len(VAF_LABEL_RADII)
+        for pos, vaf, color, sv_id in sorted(items):
+            ring = None
+            for i, last in enumerate(last_pos_on_ring):
+                if last is None or pos - last >= min_sep:
+                    ring = i
+                    break
+            if ring is None:
+                # Every ring is occupied nearby: draw on the ring whose
+                # neighbour is furthest away, and report the crowding.
+                ring = max(
+                    range(len(last_pos_on_ring)),
+                    key=lambda i: pos - (last_pos_on_ring[i] or 0),
+                )
+                n_crowded += 1
+            last_pos_on_ring[ring] = pos
+            try:
+                circos.get_sector(chrom).text(
+                    f"{round(vaf * 100)} %",
+                    x=pos, r=VAF_LABEL_RADII[ring],
+                    size=5.5, color=color,
+                    ignore_range_error=True,
+                )
+                n_drawn += 1
+            except Exception as e:  # noqa: BLE001
+                print(f"  warn: VAF label failed for {sv_id}: {e}",
+                      file=sys.stderr)
+    return n_drawn, n_crowded
+
+
 def plot_circos(
     bnds_unique: list[BND],
     contigs: dict[str, int],
@@ -2945,6 +3099,7 @@ def plot_circos(
     n_pass: int,
     filter_label: str,
     breakdown: dict,
+    plot_vaf: bool = False,
 ) -> None:
     """Render the circos plot (BND ribbons on hg38 cytoband ideogram).
 
@@ -2969,6 +3124,12 @@ def plot_circos(
         ``"pass"`` or ``"all"``, displayed in the title.
     breakdown : dict
         Output of :func:`noise_breakdown`.
+    plot_vaf : bool, optional
+        Annotate each drawn arc with its VAF as a percentage, placed
+        at the arc's first endpoint just inside the cytoband ring.
+        Off by default - readable on a targeted panel, unreadable on
+        a WGS call set. Noise-flagged BNDs are never labelled: they
+        are deliberately de-emphasised and a label would undo that.
     """
     import tempfile
 
@@ -3001,8 +3162,9 @@ def plot_circos(
     circos = Circos.initialize_from_bed(str(tmp_bed), space=2)
     circos.add_cytoband_tracks((95, 100), str(cyto_for_pycirclize))
 
+    name_r = SECTOR_NAME_R_WITH_VAF if plot_vaf else SECTOR_NAME_R
     for sector in circos.sectors:
-        sector.text(sector.name.replace("chr", ""), r=108, size=10)
+        sector.text(sector.name.replace("chr", ""), r=name_r, size=10)
         track = sector.get_track("cytoband")
         track.xticks_by_interval(
             100_000_000,
@@ -3017,6 +3179,7 @@ def plot_circos(
     smax = supports.max() if supports.size else 1.0
 
     pad = 250_000
+    pending_labels: list[tuple] = []
     ordered = sorted(bnds_unique, key=lambda b: (not b.is_noise, b.support))
     for b in ordered:
         if b.chr1 not in contigs or b.chr2 not in contigs:
@@ -3031,6 +3194,21 @@ def plot_circos(
                         linewidth=support_to_lw(b.support, smax, 0.2, 1.0))
         except Exception as e:  # noqa: BLE001
             print(f"  warn: circos link failed for {b.sv_id}: {e}", file=sys.stderr)
+            continue
+        if plot_vaf and not b.is_noise:
+            pending_labels.append((b.chr1, b.pos1, b.vaf, color, b.sv_id))
+
+    if plot_vaf:
+        n_labelled, n_crowded = _draw_vaf_labels(
+            circos, pending_labels, contigs,
+        )
+        print(f"--plotvaf: labelled {n_labelled} BND arc"
+              f"{'' if n_labelled == 1 else 's'}"
+              + (f" ({n_crowded} overlapping)" if n_crowded else ""))
+        if n_labelled > VAF_LABEL_CROWDING_WARN:
+            print(f"  warn: {n_labelled} VAF labels on one circos will "
+                  f"overplot; --plotvaf is aimed at targeted / panel runs",
+                  file=sys.stderr)
 
     fig = circos.plotfig()
     # Widen the figure so the VAF colorbar sits clearly right of the
@@ -3040,11 +3218,13 @@ def plot_circos(
     fig.set_size_inches(w * 1.30, h)
 
     cax = fig.add_axes([0.95, 0.30, 0.012, 0.40])
-    sm = plt.cm.ScalarMappable(cmap=VAF_CMAP, norm=plt.Normalize(VAF_VMIN, VAF_VMAX))
+    sm = plt.cm.ScalarMappable(cmap=VAF_CMAP, norm=VAF_NORM)
     cb = fig.colorbar(sm, cax=cax, label="VAF")
-    cb.ax.tick_params(labelsize=8)
+    _style_vaf_colorbar(cb)
 
-    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    fig.set_facecolor(PAPER_BG)
+    fig.savefig(out_path, dpi=200, bbox_inches="tight",
+                facecolor=fig.get_facecolor())
     plt.close(fig)
 
     # Clean up the staged tempdir.
@@ -3264,10 +3444,11 @@ def _add_genome_map_decor(
     )
     ax.add_artist(leg2)
 
-    sm = plt.cm.ScalarMappable(cmap=VAF_CMAP, norm=plt.Normalize(VAF_VMIN, VAF_VMAX))
+    sm = plt.cm.ScalarMappable(cmap=VAF_CMAP, norm=VAF_NORM)
     sm.set_array([])
     cbar = fig.colorbar(sm, ax=ax, fraction=0.022, pad=0.02)
     cbar.set_label("BND VAF", fontsize=9)
+    _style_vaf_colorbar(cbar)
 
 
 def plot_genome_sv_map(
@@ -3354,8 +3535,10 @@ def plot_genome_sv_map(
     # needs them explicitly listed or it can omit entries that overflow.
     from matplotlib.legend import Legend
     extra = list(ax.findobj(Legend))
+    fig.set_facecolor(PAPER_BG)
+    ax.set_facecolor(PAPER_BG)
     fig.savefig(out_path, dpi=200, bbox_inches="tight",
-                 bbox_extra_artists=extra)
+                 bbox_extra_artists=extra, facecolor=fig.get_facecolor())
     plt.close(fig)
 
 
@@ -3628,7 +3811,10 @@ def render_compound_het_png(
 
     target_dpi = min(150.0, MAX_PX_WIDTH / fig.get_figwidth())
     buf = io.BytesIO()
-    fig.savefig(buf, dpi=target_dpi, format="png")
+    fig.set_facecolor(PAPER_BG)
+    ax.set_facecolor(PAPER_BG)
+    fig.savefig(buf, dpi=target_dpi, format="png",
+                facecolor=fig.get_facecolor())
     plt.close(fig)
     stats = {
         "n_trans": n_trans, "n_cis": n_cis,
@@ -4015,11 +4201,12 @@ _COMPOUND_HET_REPORT_CSS = """
 
 
 _HTML_REPORT_CSS = """
-:root { --fg: #1a1a1a; --bg: #fff; --muted: #6b6b6b; --border: #ddd;
+:root { --fg: #1a1a1a; --bg: __PAPER_BG__; --muted: #6b6b6b; --border: #ddd;
         --chip-bg: #f0f0f0; --chip-warn: #fff4d6; }
 * { box-sizing: border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
-       max-width: 1500px; margin: 1.5em auto; color: var(--fg); padding: 0 1.5em; line-height: 1.5; }
+       max-width: 1500px; margin: 1.5em auto; color: var(--fg); padding: 0 1.5em; line-height: 1.5;
+       background: var(--bg); }
 header { margin-bottom: 1.5em; }
 header svg.banner { display: block; width: 100%; height: auto;
                     margin: 0 auto 0.4em; }
@@ -4045,6 +4232,11 @@ footer a { color: inherit; text-decoration: underline; text-decoration-color: #c
            text-underline-offset: 2px; }
 footer a:hover { color: var(--fg); text-decoration-color: var(--muted); }
 """
+
+# One source of truth for the page background: the embedded figures
+# are rendered on PAPER_BG, so the page must use the same value or
+# each figure shows as an off-white box on a white page.
+_HTML_REPORT_CSS = _HTML_REPORT_CSS.replace("__PAPER_BG__", PAPER_BG)
 
 
 def _header_svg() -> str:
@@ -4168,6 +4360,13 @@ def _add_sv_args(p) -> None:
     p.add_argument("--bin-size", type=int, default=1_000_000,
                    help="bin width (bp) for genome SV map density tracks "
                         "(default 1,000,000)")
+    p.add_argument("--plotvaf", action="store_true",
+                   help="print each BND's VAF as a percentage next to its "
+                        "arc on the circos plot. Off by default: on a WGS "
+                        "call set the labels overplot each other. Intended "
+                        "for targeted / panel runs with few breakends, "
+                        "where reading the exact VAF off the plot is more "
+                        "useful than reading the class colour.")
     p.add_argument(
         "--caller",
         choices=["auto", "sniffles2", "sniffles1", "cutesv",
@@ -4505,7 +4704,8 @@ def plot_main(args: argparse.Namespace) -> int:
     # Render both figures into in-memory PNG buffers — no temp files.
     circos_buf = io.BytesIO()
     plot_circos(unique_bnds, contigs, cytoband_file,
-                circos_buf, sample, n_total, n_pass, args.filter, bd)
+                circos_buf, sample, n_total, n_pass, args.filter, bd,
+                plot_vaf=args.plotvaf)
     sv_map_buf = io.BytesIO()
     plot_genome_sv_map(unique_bnds, svs, contigs, cytobands,
                         sv_map_buf, sample, n_total, n_pass, args.filter, bd,

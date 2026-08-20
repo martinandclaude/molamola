@@ -3,7 +3,23 @@
 All notable changes to molamola are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.4.0] — 2026-08-21
+
+### Added
+
+- **`--plotvaf`** (SV mode) — prints each BND's VAF as a percentage next to its arc on the circos plot. Off by default, since on a WGS call set the labels overplot; intended for targeted / panel runs where reading the exact VAF off the plot beats reading the class colour. Labels sit on the rim just outside the ideogram, staggered across four rings because breakpoints cluster and a single ring is unreadable. Where a cluster has more breakpoints than rings the labels are drawn anyway rather than silently dropped, and the run reports how many overlap. Noise-flagged BNDs are not labelled — they are deliberately de-emphasised and a label would undo that.
+
+### Changed
+
+- **BND VAF is now drawn as three discrete classes instead of a continuous ramp.** Boundaries are even thirds: `0-33 %` mosaic, `33-66 %` het, `66-100 %` hom. A linear `[0, 1]` plasma ramp compressed the bulk of a typical ONT call set into one narrow purple-to-magenta stretch that was not separable at 1 px linewidth, and its yellow end reached only 1.6-2.0:1 contrast against the page, making the rarest and most interesting arcs (high VAF) the hardest to see. Even thirds keep the scale readable without memorising boundaries and land close enough to the biology to be useful. Every class colour clears 3:1 contrast. Both colorbars are stepped, tick at the class boundaries **as percentages**, and carry the class name inside each band.
+- **Figure and page background is now the off-white `PAPER_BG` (`#FAF8F4`)** across all three modes, giving thin BND arcs, pale cytobands, and the karyotype scatter something to sit against. Applied to the SV circos, the linear genome map, the karyotype genome figure, and the compound-het gene panels, and to the shared HTML report CSS so the embedded figures sit flush with the page instead of showing as off-white boxes on white. This colour was already specified as `KARY_PAPER` in the karyotype palette but had never been referenced by any figure; `KARY_PAPER` is now an alias of `PAPER_BG`.
+- `vaf_to_color()` and both colorbars are driven by a single shared `VAF_NORM`, so the arcs and the scale they are read against cannot drift apart.
+
+### Fixed
+
+- **BND records with a real reference base in the ALT were silently dropped.** `parse_alt_for_mate()` matched the base-then-bracket forms against a literal `"N"` (`N[chr:pos[`, `N]chr:pos]`), but per the VCF spec that leading character is the actual reference base. Callers that write the real base — Sniffles2 >= 2.8 and DRAGEN_SV among them — produce ALTs like `G]chr16:12345]`, which raised `ValueError`; `_build_event()` catches that and returns `None`, so the record vanished from the report with no warning. Only the bracket-first forms survived. On real ONT call sets this dropped roughly half of every BND set (e.g. 169 of 349, and 2059 of 4184 on a DRAGEN run). The parser now accepts any replacement sequence on either side, matches case-insensitively, and takes `.` for the single-breakend forms. Orientation mapping for the previously-working forms is unchanged.
+- **BND ALTs carrying inserted sequence at the breakpoint were dropped in both orientations.** The old fixed-offset slicing (`s[2:-1]` / `s[1:-2]`) assumed a one-character replacement string, so multi-base ALTs such as `GTTTT[chr2:123[` or `]chr2:123]GTTTT` failed to parse. DRAGEN emits these routinely (up to 916 bases in one test call set). Parsing is now delimiter-based rather than offset-based.
+- Contig names containing colons (e.g. HLA ALT contigs, `G]HLA-A*01:01:01:01:12345]`) now parse — only the final `:` is treated as the contig/position separator.
 
 ## [0.3.0] — 2026-05-12
 

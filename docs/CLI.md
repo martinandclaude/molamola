@@ -44,6 +44,7 @@ Active when the input VCF carries `##INFO=<ID=SVTYPE,...>` (Sniffles2 / cuteSV /
 | `--focus-window N` | `1000` | +/-bp tolerance for `--focus` matching. |
 | `--min-svlen N` | `50` | hard SVLEN cutoff (bp) for non-BND SVs. Set `0` to disable. BNDs are unaffected. |
 | `--bin-size N` | `1,000,000` | density-track bin width in bp. |
+| `--plotvaf` | off | print each BND's VAF as a percentage next to its arc on the circos. Aimed at targeted / panel runs; on a WGS call set the labels overplot. Labels are staggered across four rings and, where breakpoints are too clustered to separate, drawn anyway with the overlap count reported. Noise-flagged BNDs are not labelled. |
 
 ## Compound-het mode flags
 
