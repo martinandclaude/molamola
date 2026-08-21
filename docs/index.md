@@ -15,7 +15,7 @@ the `--mosdepth` flag:
   from phased + VEP-annotated small-variant VCFs
   (WhatsHap, HiPhase).
 - **Karyotype coverage report** for a mosdepth `regions.bed.gz`
-  (via `--mosdepth`) — genome-wide CN scatter + rolling-median
+  (via `--mosdepth`) — genome-wide log2 relative-depth scatter + rolling-median
   smooth, with an optional BAF panel beneath when paired with a
   small-variant VCF.
 

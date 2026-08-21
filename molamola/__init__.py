@@ -33,7 +33,7 @@ rather than silently producing a default plot.
 
 from __future__ import annotations
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 import argparse
 import base64
@@ -54,6 +54,7 @@ import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
 from matplotlib.colors import to_rgb
+from matplotlib.lines import Line2D
 from matplotlib.path import Path as MplPath
 
 
@@ -209,6 +210,15 @@ KARY_ACROCENTRIC_FOR_LABELS: tuple[str, ...] = (
 #: sentinel.
 GC_MISSING: int = 255
 
+#: Fraction of a coverage bin that must be inside the exclusion mask
+#: before the bin is dropped (strictly greater than). The bundled masks
+#: are 500 bp-resolution, so an any-overlap test scaled the exclusion
+#: with the caller's mosdepth bin size rather than with the mask: on a
+#: 1 kb run it excluded 57.8 % of bins for a mask covering 39.8 % of
+#: hg38. Majority-masked is both bin-size-robust and empirically right
+#: -- half-masked 1 kb bins measure like clean sequence.
+MASK_OVERLAP_FRAC: float = 0.5
+
 #: Karyotype-mode palette (Direction A "Paper"). Distinct from the
 #: SV-mode ISCN greyscale; applied per-call so matplotlib rcParams
 #: stay unchanged between modes.
@@ -222,6 +232,30 @@ KARY_ROSE: str    = "#DC5A99"
 KARY_OXFORD: str  = "#1F4F7A"
 KARY_MIST: str    = "#DDE6D8"
 
+#: Karyotype scatter inks. Chromosomes alternate between these two so the
+#: boundaries read at a glance instead of having to be traced back to the
+#: thin vertical rules; the sex chromosomes get their own inks so a
+#: single-copy X / Y pattern is legible without counting across to the axis.
+KARY_AUTO_A: str  = "#2C4A73"
+KARY_AUTO_B: str  = "#7FA6D0"
+KARY_CHRX: str    = "#E08214"
+KARY_CHRY: str    = "#3F8F57"
+
+#: Alternate-chromosome background band, same purpose as the ink
+#: alternation and reinforcing it.
+KARY_BAND: str        = "#E5E1D8"
+KARY_BAND_ALPHA: float = 0.40
+
+#: Global copy-number reference lines drawn across the log2 panel, as
+#: (copy number, colour, dash pattern). CN 2 sits at log2 0, CN 1 at -1,
+#: CN 3 at log2(1.5) = 0.585. Labelled at the right edge so the plot
+#: states its own CN scale rather than leaving it to be inferred.
+KARY_CN_REF_LINES: tuple[tuple[float, str, tuple], ...] = (
+    (3.0, "#3F8F57", (1, 2)),
+    (2.0, "#5C5D63", ()),
+    (1.0, "#C0475B", (5, 3)),
+)
+
 #: Font stacks for karyotype-mode tick / label text. Applied per-call;
 #: matplotlib walks the list and picks the first installed font.
 KARY_FONT_SANS: tuple[str, ...] = (
@@ -233,8 +267,8 @@ KARY_FONT_MONO: tuple[str, ...] = (
 
 #: Karyotype-mode figure / layout constants. Locked at port time.
 KARY_FIG_W: float                              = 18.0
-KARY_FIG_H_GENOME_BAF: float                   = 6.4
-KARY_FIG_H_GENOME_ONLY: float                  = 4.8
+KARY_FIG_H_GENOME_BAF: float                   = 8.6
+KARY_FIG_H_GENOME_ONLY: float                  = 6.4
 KARY_YLABEL_X: float                           = -0.030
 KARY_HEIGHT_RATIOS_CN_BAF: tuple[float, float] = (2.4, 1.0)
 
@@ -969,6 +1003,134 @@ def _parse_baf(format_kv: dict[str, str]) -> float | None:
 
 _KARY_SNV_BASES: frozenset[str] = frozenset({"A", "C", "G", "T", "a", "c", "g", "t"})
 
+#: Haplotype-resolved BAF aggregation. Read counts are summed within a
+#: phase block over a tiling window of this many het SNVs -- summing
+#: reads rather than averaging per-site fractions is the
+#: variance-correct estimator. Windows also split on a large positional
+#: gap so one window never straddles unrelated sequence.
+KARY_BAF_SNPS_PER_WIN: int = 40
+KARY_BAF_MAX_GAP: int = 1_000_000
+
+#: Minimum reads on each allele at a het site used for phased BAF.
+#: Guards against mis-called homozygotes dragging a window to 0 or 1.
+KARY_BAF_ALLELE_FLOOR: int = 2
+
+#: Phased BAF needs enough phased het sites to be worth switching to.
+#: Below this the run falls back to the per-site panel.
+KARY_BAF_MIN_PHASED: int = 1000
+
+
+def aggregate_phased_baf(
+    df: pd.DataFrame,
+    snps_per_win: int = KARY_BAF_SNPS_PER_WIN,
+    max_gap: int = KARY_BAF_MAX_GAP,
+) -> pd.DataFrame | None:
+    """Collapse phased het sites into haplotype-resolved BAF windows.
+
+    Within each ``(chrom, PS)`` phase block, het SNVs are tiled into
+    runs of ``snps_per_win`` (also split when consecutive sites are
+    more than ``max_gap`` apart, so one window never straddles
+    unrelated sequence). Per window the haplotype-1 read counts are
+    **summed** and divided by summed depth -- summing reads rather
+    than averaging per-site fractions is the variance-correct
+    estimator, and it is what makes an allelic imbalance stand out
+    from per-site sampling noise.
+
+    Which haplotype a block calls "1" is arbitrary and flips between
+    blocks, so each window is emitted twice, at ``v`` and ``1 - v``.
+    The track is then invariant to the label flip and a real imbalance
+    reads as a symmetric split rather than as a scatter of half-blocks
+    on one side.
+
+    Returns ``None`` when the input carries fewer than
+    :data:`KARY_BAF_MIN_PHASED` usable phased sites, so the caller can
+    fall back to the per-site panel.
+    """
+    if "ps" not in df.columns or "h1" not in df.columns:
+        return None
+    usable = df[(df["ps"] >= 0) & df["h1"].notna() & (df["dp"] > 0)]
+    if len(usable) < KARY_BAF_MIN_PHASED:
+        return None
+
+    chroms: list[str] = []
+    mids: list[int] = []
+    vals: list[float] = []
+    for chrom, sub in usable.groupby("chrom", observed=True, sort=False):
+        sub = sub.sort_values(["ps", "pos"], kind="stable")
+        pos = sub["pos"].to_numpy()
+        ps = sub["ps"].to_numpy()
+        h1 = sub["h1"].to_numpy()
+        dp = sub["dp"].to_numpy().astype(np.float64)
+        n = pos.size
+        i = 0
+        while i < n:
+            j = i
+            cnt = 0
+            sum_h1 = 0.0
+            sum_dp = 0.0
+            while (j < n and ps[j] == ps[i] and cnt < snps_per_win
+                   and (j == i or pos[j] - pos[j - 1] <= max_gap)):
+                sum_h1 += h1[j]
+                sum_dp += dp[j]
+                cnt += 1
+                j += 1
+            if sum_dp > 0:
+                chroms.append(str(chrom))
+                mids.append(int((pos[i] + pos[j - 1]) // 2))
+                vals.append(sum_h1 / sum_dp)
+            i = j
+
+    if not vals:
+        return None
+    v = np.asarray(vals, dtype=np.float64)
+
+    # Absorb ONT reference-mapping bias: a normal genome is mostly
+    # balanced, so shift the autosomal median onto 0.5. Without this a
+    # systematic few-percent bias renders as a permanent split once the
+    # track is mirrored.
+    is_auto = np.isin(np.asarray(chroms), list(KARY_AUTOSOMES))
+    if is_auto.any():
+        v = np.clip(v + (0.5 - float(np.median(v[is_auto]))), 0.0, 1.0)
+
+    out = pd.DataFrame({
+        "chrom": pd.Categorical(
+            chroms + chroms, categories=CHROM_ORDER, ordered=True,
+        ),
+        "pos": np.concatenate([mids, mids]).astype(np.int64),
+        "baf": np.concatenate([v, 1.0 - v]),
+    })
+    return out.sort_values(["chrom", "pos"], kind="stable").reset_index(drop=True)
+
+
+def _parse_phase_fields(kv: dict[str, str]) -> tuple[int, float]:
+    """Extract ``(PS, hap-1 read count)`` from a parsed FORMAT mapping.
+
+    Returns ``(-1, nan)`` when the record is not usable for phased BAF:
+    unphased GT, missing PS, or no per-allele AD. The left allele of a
+    phased GT is haplotype 1, so ``1|0`` puts ALT reads on hap 1 and
+    ``0|1`` puts REF reads there.
+    """
+    gt = kv.get("GT", "")
+    if "|" not in gt:
+        return -1, float("nan")
+    left, _, right = gt.partition("|")
+    if left == right:
+        return -1, float("nan")
+    ps_raw = kv.get("PS")
+    if ps_raw in (None, "", "."):
+        return -1, float("nan")
+    ad_raw = kv.get("AD")
+    if ad_raw in (None, "", "."):
+        return -1, float("nan")
+    try:
+        ref_d, alt_d = (int(x) for x in ad_raw.split(",")[:2])
+        ps_val = int(ps_raw)
+    except ValueError:
+        return -1, float("nan")
+    if ref_d < KARY_BAF_ALLELE_FLOOR or alt_d < KARY_BAF_ALLELE_FLOOR:
+        return -1, float("nan")
+    return ps_val, float(alt_d if left == "1" else ref_d)
+
 
 def read_baf_vcf(path: Path, min_dp: int, min_gq: int = 20) -> pd.DataFrame:
     """Stream het allele fractions from a small-variant VCF as plain text.
@@ -1073,7 +1235,12 @@ def read_baf_vcf(path: Path, min_dp: int, min_gq: int = 20) -> pd.DataFrame:
                 pos = int(f[1])
             except ValueError:
                 continue
-            rows.append((chrom, pos, float(baf)))
+            # Phase fields, when the caller emitted them. Collected
+            # opportunistically: molamola takes whatever VCF it is
+            # handed, so phase upgrades the panel when present rather
+            # than being a precondition for producing one.
+            ps_val, h1_val = _parse_phase_fields(kv)
+            rows.append((chrom, pos, float(baf), ps_val, h1_val, dp))
     if not rows:
         return pd.DataFrame({
             "chrom": pd.Categorical(
@@ -1081,8 +1248,11 @@ def read_baf_vcf(path: Path, min_dp: int, min_gq: int = 20) -> pd.DataFrame:
             ),
             "pos": np.array([], dtype=np.int64),
             "baf": np.array([], dtype=np.float64),
+            "ps": np.array([], dtype=np.int64),
+            "h1": np.array([], dtype=np.float64),
+            "dp": np.array([], dtype=np.int64),
         })
-    df = pd.DataFrame(rows, columns=["chrom", "pos", "baf"])
+    df = pd.DataFrame(rows, columns=["chrom", "pos", "baf", "ps", "h1", "dp"])
     df["chrom"] = pd.Categorical(
         df["chrom"], categories=CHROM_ORDER, ordered=True,
     )
@@ -2108,36 +2278,78 @@ def cum_offsets(lengths: dict[str, int]) -> dict[str, int]:
 
 
 def annotate_mask(cov: pd.DataFrame, mask_bed: Path, bin_size: int,
-                  lengths: dict[str, int]) -> np.ndarray:
-    """Per-cov-row bool: ``True`` if the bin overlaps the exclusion mask.
+                  lengths: dict[str, int],
+                  min_overlap_frac: float = MASK_OVERLAP_FRAC) -> np.ndarray:
+    """Per-cov-row bool: ``True`` if the bin is mostly inside the mask.
+
+    Overlap is measured in base pairs, not as a yes/no touch. The
+    bundled exclusion masks are built from 500 bp runs (median interval
+    is exactly 500 bp), so an any-overlap test throws away a whole bin
+    for a half-bin hit. On a 1 kb mosdepth run that turned a mask
+    covering 39.8 % of hg38 into 57.8 % of bins excluded -- ~550 Mb of
+    genome discarded by bin geometry rather than by the mask, and those
+    bins are dropped from the CN normalisation anchor as well as the
+    plot. Requiring the masked fraction to reach ``min_overlap_frac``
+    makes the result depend on the mask instead of on the caller's
+    choice of mosdepth bin size. At 500 bp bins this reduces to the old
+    behaviour.
 
     Aligned 1:1 with ``cov`` rows. Downstream code typically uses
     ``mask_pass = ~result`` as the keep-mask.
     """
-    masked = {
-        c: np.zeros((lengths[c] + bin_size - 1) // bin_size, dtype=bool)
+    nbins = {
+        c: (lengths[c] + bin_size - 1) // bin_size
         for c in CHROM_ORDER if c in lengths
     }
+    # Masked bp per bin. Partial (edge) bins are accumulated directly;
+    # fully-covered interior runs go through a difference array so a
+    # long interval does not cost one operation per bin it spans.
+    edge = {c: np.zeros(n, dtype=np.int64) for c, n in nbins.items()}
+    span = {c: np.zeros(n + 1, dtype=np.int64) for c, n in nbins.items()}
     with open_text(mask_bed) as fh:
         for line in fh:
             parts = line.rstrip("\n").split("\t")
             if len(parts) < 3:
                 continue
             chrom = parts[0]
-            if chrom not in masked:
+            if chrom not in edge:
                 continue
-            s, e = int(parts[1]), int(parts[2])
+            try:
+                s, e = int(parts[1]), int(parts[2])
+            except ValueError:
+                continue
+            if e <= s:
+                continue
+            n = nbins[chrom]
             b0 = s // bin_size
-            b1 = (e + bin_size - 1) // bin_size
-            masked[chrom][b0:b1] = True
+            if b0 >= n:
+                continue
+            b1 = min((e - 1) // bin_size, n - 1)
+            if b0 == b1:
+                edge[chrom][b0] += e - s
+                continue
+            edge[chrom][b0] += (b0 + 1) * bin_size - s
+            edge[chrom][b1] += e - b1 * bin_size
+            if b1 > b0 + 1:
+                span[chrom][b0 + 1] += bin_size
+                span[chrom][b1] -= bin_size
+
+    # Strictly greater: a bin that is exactly half masked is kept. On a
+    # 1 kb run against the 500 bp-resolution mask those half-masked bins
+    # measure like clean sequence (SD 0.230 log2 vs 0.225 for clean,
+    # against 1.072 for fully-masked bins), so dropping them would
+    # discard ~36 % of the genome that carries good signal.
+    threshold = min_overlap_frac * bin_size
     out = np.zeros(len(cov), dtype=bool)
     for chrom, idx in cov.groupby("chrom", observed=True).indices.items():
-        if chrom not in masked:
+        if chrom not in edge:
             continue
+        masked_bp = edge[chrom] + np.cumsum(span[chrom][:-1])
+        flag = np.minimum(masked_bp, bin_size) > threshold
         bins = (cov["start"].iloc[idx].to_numpy() // bin_size).astype(np.int64)
-        valid = bins < len(masked[chrom])
+        valid = bins < len(flag)
         if valid.any():
-            out[idx[valid]] = masked[chrom][bins[valid]]
+            out[idx[valid]] = flag[bins[valid]]
     return out
 
 
@@ -2254,6 +2466,22 @@ def detect_sex_from_cn(cn: np.ndarray, chroms: pd.Series,
     if not use.any():
         return "female"
     return "male" if float(np.median(cn[use])) > 0.3 else "female"
+
+
+def cn_to_log2(cn):
+    """Convert copy number to log2 relative depth, CN 2 -> 0.
+
+    A linear CN axis spends most of its height on empty space above the
+    diploid band while compressing the deviations that matter; log2 puts
+    the axis where the data is and makes a single-copy loss and a
+    single-copy gain read symmetrically. Non-positive input becomes NaN
+    (log2 is undefined there) so zero-depth bins drop out rather than
+    dragging the axis to -inf.
+    """
+    arr = np.asarray(cn, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        out = np.log2(np.where(arr > 0, arr, np.nan) / 2.0)
+    return out
 
 
 def expected_copy_number(chrom: str, sex: str) -> float:
@@ -2457,40 +2685,118 @@ def _kary_build_arm_ticks(cb: pd.DataFrame,
     return xs, labels
 
 
+def _kary_chrom_ink(chrom: str, index: int) -> str:
+    """Scatter colour for a chromosome: alternating autosome inks, own
+    ink for each sex chromosome."""
+    if chrom == "chrX":
+        return KARY_CHRX
+    if chrom == "chrY":
+        return KARY_CHRY
+    return KARY_AUTO_A if index % 2 == 0 else KARY_AUTO_B
+
+
+def _kary_draw_chrom_bands(axes, chrom_spans) -> None:
+    """Shade alternate chromosomes across every panel.
+
+    Reinforces the ink alternation, so a reader can tell which
+    chromosome a deviation sits on without tracing back to the axis.
+    """
+    for i, (_chrom, x0, x1, _exp) in enumerate(chrom_spans):
+        if i % 2 == 0:
+            continue
+        for ax in axes:
+            ax.axvspan(x0, x1, color=KARY_BAND, alpha=KARY_BAND_ALPHA,
+                       lw=0, zorder=0)
+
+
 def _kary_plot_coverage(ax, scatter_df: pd.DataFrame,
                         smooth_df: pd.DataFrame,
-                        expected_lines: list[tuple[float, float, float]],
-                        ymax: float, x_col: str = "xpos") -> None:
-    """CN scatter + per-chrom rolling-median smooth + expected-CN dashes."""
+                        chrom_spans, ymin: float, ymax: float,
+                        x_col: str = "xpos") -> None:
+    """log2 relative-depth scatter + rolling-median smooth + CN refs."""
+    order = {chrom: i for i, (chrom, _x0, _x1, _e) in enumerate(chrom_spans)}
+
+    # Global CN reference lines first, so the cloud sits on top of them.
+    for cn_level, colour, dashes in KARY_CN_REF_LINES:
+        y = float(cn_to_log2(cn_level))
+        ax.axhline(y, color=colour, lw=0.9, alpha=0.85,
+                   dashes=dashes if dashes else (None, None), zorder=1.0)
+        ax.annotate(
+            f"CN {cn_level:g}", xy=(1.0, y), xycoords=("axes fraction", "data"),
+            xytext=(4, 0), textcoords="offset points",
+            va="center", ha="left", fontsize=8.5, color=colour,
+            fontweight="medium", annotation_clip=False,
+        )
+
     sc_p = scatter_df[scatter_df["mask_pass"]]
-    ax.scatter(
-        sc_p[x_col], sc_p["cn"], s=2.4, alpha=0.32,
-        c=KARY_SCATTER, linewidths=0, rasterized=True,
-    )
+    for chrom, sub in sc_p.groupby("chrom", observed=True, sort=False):
+        ax.scatter(
+            sub[x_col], cn_to_log2(sub["cn"]), s=2.4, alpha=0.34,
+            c=_kary_chrom_ink(str(chrom), order.get(str(chrom), 0)),
+            linewidths=0, rasterized=True, zorder=2,
+        )
+
     for _chrom, sub in smooth_df.groupby("chrom", observed=True, sort=False):
         ax.plot(
-            sub[x_col], sub["smooth"], color=KARY_ROSE,
-            lw=2.0, solid_capstyle="round",
+            sub[x_col], cn_to_log2(sub["smooth"]), color=KARY_ROSE,
+            lw=0.9, alpha=0.9, solid_capstyle="round", zorder=3,
         )
-    for x0, x1, y in expected_lines:
-        ax.plot(
-            [x0, x1], [y, y], color=KARY_OXFORD,
-            lw=0.9, alpha=0.85, dashes=(4, 2),
-        )
-    ax.set_ylim(0, ymax)
-    ax.set_ylabel("CN")
+
+    # Per-chromosome expected CN (sex-aware: 1 copy on male X / Y).
+    for _chrom, x0, x1, expected in chrom_spans:
+        y = float(cn_to_log2(expected))
+        ax.plot([x0, x1], [y, y], color=KARY_OXFORD,
+                lw=0.9, alpha=0.85, dashes=(4, 2), zorder=2.5)
+
+    ax.set_ylim(ymin, ymax)
+    ax.set_ylabel("relative depth (log$_2$)")
+
+    handles = [
+        Line2D([0], [0], marker="o", color="w", markersize=6,
+               markerfacecolor=KARY_AUTO_A, label="autosomes"),
+        Line2D([0], [0], marker="o", color="w", markersize=6,
+               markerfacecolor=KARY_CHRX, label="chrX"),
+        Line2D([0], [0], marker="o", color="w", markersize=6,
+               markerfacecolor=KARY_CHRY, label="chrY"),
+    ]
+    leg = ax.legend(handles=handles, loc="lower left", ncol=3, frameon=True,
+                    fontsize=8.5, handletextpad=0.3, columnspacing=1.1,
+                    borderpad=0.4)
+    leg.get_frame().set_edgecolor(KARY_RULE)
+    leg.get_frame().set_facecolor(PAPER_BG)
 
 
-def _kary_plot_baf(ax, baf_df: pd.DataFrame, x_col: str = "xpos") -> None:
-    """BAF scatter with reference grid lines at 0.25 / 0.5 / 0.75."""
-    ax.scatter(
-        baf_df[x_col], baf_df["baf"], s=2.0, alpha=0.30,
-        c=KARY_SCATTER, linewidths=0, rasterized=True,
-    )
-    for y in (0.25, 0.5, 0.75):
-        ax.axhline(y, color=KARY_OXFORD, lw=0.6, dashes=(3, 2), alpha=0.55)
+#: BAF reference levels. 1/2 is the balanced-het expectation; 1/3 and
+#: 2/3 are where hets sit at CN 3, so a trisomy reads as the cloud
+#: splitting onto those two lines rather than as a vague widening.
+#: Quarter-point gridlines carried no such meaning.
+KARY_BAF_REF_LEVELS: tuple[float, ...] = (1 / 3, 0.5, 2 / 3)
+
+
+def _kary_plot_baf(ax, baf_df: pd.DataFrame, chrom_spans=None,
+                   x_col: str = "xpos") -> None:
+    """BAF scatter with CN-meaningful reference lines at 1/3, 1/2, 2/3."""
+    order = ({chrom: i for i, (chrom, _a, _b, _c) in enumerate(chrom_spans)}
+             if chrom_spans else {})
+    for y in KARY_BAF_REF_LEVELS:
+        ax.axhline(y, color=KARY_OXFORD, lw=0.6, dashes=(3, 2), alpha=0.55,
+                   zorder=1)
+    if order:
+        for chrom, sub in baf_df.groupby("chrom", observed=True, sort=False):
+            ax.scatter(
+                sub[x_col], sub["baf"], s=2.0, alpha=0.30,
+                c=_kary_chrom_ink(str(chrom), order.get(str(chrom), 0)),
+                linewidths=0, rasterized=True, zorder=2,
+            )
+    else:
+        ax.scatter(
+            baf_df[x_col], baf_df["baf"], s=2.0, alpha=0.30,
+            c=KARY_SCATTER, linewidths=0, rasterized=True, zorder=2,
+        )
     ax.set_ylim(0, 1)
-    ax.set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
+    ax.set_yticks([0.0, 1 / 3, 0.5, 2 / 3, 1.0])
+    # Percentages, not decimals, per molamola's user-facing convention.
+    ax.set_yticklabels(["0 %", "33 %", "50 %", "67 %", "100 %"])
     ax.set_ylabel("BAF")
 
 
@@ -2525,29 +2831,6 @@ def _kary_format_bin_size(bp: float) -> str:
         return f"{bp / 1e3:.0f} kb"
     return f"{bp:.0f} bp"
 
-
-def _karyotype_meta_chips(args: argparse.Namespace, scatter_bin_label: str,
-                          sex: str, *, is_adaptive: bool = False) -> list[str]:
-    """Compose the karyotype run-metadata strip as a list of chips.
-
-    Used by both the in-figure metadata line and the HTML report's
-    run-metadata section so the same provenance shows up in both
-    places.
-    """
-    bits: list[str] = [
-        args.mosdepth.name,
-        args.reference,
-        f"sex={sex}",
-        f"bin={scatter_bin_label}",
-        f"smooth={args.smooth_window_mb} Mb",
-    ]
-    if getattr(args, "no_mask", False):
-        bits.append("mask=off")
-    if getattr(args, "no_gc", False):
-        bits.append("GC=off")
-    if is_adaptive:
-        bits.append("AS suspected")
-    return bits
 
 
 def _kary_attach_xpos(df: pd.DataFrame, pos_col: str,
@@ -2594,14 +2877,15 @@ def render_karyotype_genome_png(
         f"(median of {factor} bins, ~{scatter_bin_label})",
     )
 
-    expected_lines: list[tuple[float, float, float]] = []
+    chrom_spans: list[tuple[str, float, float, float]] = []
     for chrom in CHROM_ORDER:
         chrom_len = lengths.get(chrom, 0)
         if chrom_len == 0:
             continue
         x0 = float(offsets[chrom])
-        expected_lines.append(
-            (x0, x0 + float(chrom_len), expected_copy_number(chrom, sex)),
+        chrom_spans.append(
+            (chrom, x0, x0 + float(chrom_len),
+             expected_copy_number(chrom, sex)),
         )
 
     baf_plot: pd.DataFrame | None = None
@@ -2626,12 +2910,15 @@ def render_karyotype_genome_png(
         )
         ax_baf = None
     fig.subplots_adjust(
-        left=0.045, right=0.996, top=0.930, bottom=0.085, hspace=0.06,
+        left=0.045, right=0.996, top=0.935, bottom=0.085, hspace=0.06,
     )
     fig.patch.set_alpha(0)
 
+    _kary_draw_chrom_bands(
+        [a for a in (ax_cov, ax_baf) if a is not None], chrom_spans,
+    )
     _kary_plot_coverage(
-        ax_cov, scatter, cov_xy, expected_lines, args.ymax,
+        ax_cov, scatter, cov_xy, chrom_spans, args.ymin, args.ymax,
     )
 
     chrom_centres: list[float] = []
@@ -2650,10 +2937,15 @@ def render_karyotype_genome_png(
         ax.set_xlim(0, total)
 
     if ax_baf is not None:
-        _kary_plot_baf(ax_baf, baf_plot)
+        _kary_plot_baf(ax_baf, baf_plot, chrom_spans)
         ax_cov.tick_params(labelbottom=False)
 
     bottom_ax = ax_baf if ax_baf else ax_cov
+    bottom_ax.set_xlabel(
+        "chromosome",
+        fontfamily=list(_kary_resolve_fonts(KARY_FONT_SANS)),
+        color=KARY_INK_2, fontsize=10.5, labelpad=6,
+    )
     bottom_ax.set_xticks(chrom_centres)
     bottom_ax.set_xticklabels(
         chrom_labels, fontfamily=list(_kary_resolve_fonts(KARY_FONT_MONO)),
@@ -2663,25 +2955,19 @@ def render_karyotype_genome_png(
     arm_xs, arm_labels = _kary_build_arm_ticks(cb, offsets)
     sec = ax_cov.secondary_xaxis("top")
     sec.set_xticks(arm_xs)
+    # Rotated: on chr17-22 the p and q arms are only a few Mb wide, so
+    # horizontal labels overprint each other. Vertical text needs only
+    # its cap height horizontally, which every arm can afford.
     sec.set_xticklabels(
         arm_labels, fontfamily=list(_kary_resolve_fonts(KARY_FONT_SANS)),
-        color=KARY_INK_2, fontsize=9.5, rotation=0,
+        color=KARY_INK_2, fontsize=9.0, rotation=90,
+        ha="center", va="bottom",
     )
-    sec.tick_params(length=0, pad=2)
+    sec.tick_params(length=0, pad=3)
     for spine in sec.spines.values():
         spine.set_visible(False)
 
     _draw_kary_centromere_ticks(ax_cov, cb, offsets)
-
-    fig.text(
-        0.045, 0.965,
-        "  ·  ".join(_karyotype_meta_chips(
-            args, scatter_bin_label, sex, is_adaptive=is_adaptive,
-        )),
-        fontfamily=list(_kary_resolve_fonts(KARY_FONT_MONO)),
-        fontsize=10.5, color=KARY_INK_2,
-        ha="left", va="center",
-    )
 
     if ax_baf is not None:
         _kary_apply_tabular_numerics(ax_cov, ax_baf)
@@ -3764,7 +4050,6 @@ def render_compound_het_png(
     is reduced so the rendered PNG never exceeds
     :data:`MAX_PX_WIDTH` pixels (Anthropic many-image upload cap).
     """
-    from matplotlib.lines import Line2D
 
     n_vars = len(variants)
     width = max(12, min(24, 8 + n_vars * 0.4))
@@ -3930,6 +4215,7 @@ def make_karyotype_report(
     reference: str,
     mosdepth_source: str,
     baf_source: str | None,
+    baf_mode: str = "per-site",
     sex: str,
     bin_size: int,
     scatter_bin_label: str,
@@ -3974,7 +4260,7 @@ def make_karyotype_report(
     if baf_source is not None:
         chips.append(
             f'<span class="chip">BAF: {_esc(baf_source)} '
-            f'({n_baf_sites:,} het sites)</span>',
+            f'({n_baf_sites:,} het sites, {_esc(baf_mode)})</span>',
         )
     if is_adaptive:
         chips.append('<span class="chip warn">AS suspected</span>')
@@ -4417,6 +4703,15 @@ def _add_karyotype_args(p) -> None:
              "for production karyotype reads)",
     )
     p.add_argument(
+        "--mask-overlap", type=float, default=MASK_OVERLAP_FRAC,
+        help="drop a coverage bin when more than this fraction of it "
+             "falls inside the exclusion mask. Default 0.5 (majority "
+             "masked). The bundled masks are 500 bp-resolution, so on "
+             "coarser mosdepth bins an any-overlap rule (0) would scale "
+             "the exclusion with your bin size instead of with the mask. "
+             "Set 0 to restore the pre-v0.5.0 any-overlap behaviour.",
+    )
+    p.add_argument(
         "--gc", type=Path, default=None,
         help="override the bundled 10 kb GC table. Default: "
              "data/gc_10kb.<reference>.bed.gz. Used for per-1-percent "
@@ -4437,9 +4732,14 @@ def _add_karyotype_args(p) -> None:
              "Default 50.",
     )
     p.add_argument(
-        "--smooth-window-mb", type=float, default=0.5,
+        "--smooth-window-mb", type=float, default=10.0,
         help="window width (Mb) for the per-chrom rolling median that "
-             "draws the deep-pink smooth line. Default 0.5.",
+             "draws the deep-pink smooth line. Default 10. The old 0.5 "
+             "default was tuned for the per-chromosome grid dropped in "
+             "v0.3; across a single 3.1 Gb axis it produces thousands of "
+             "sub-pixel wiggles that render as a band over the scatter "
+             "rather than as a trend line. Tighten it when you are "
+             "looking for focal rather than arm-scale events.",
     )
     p.add_argument(
         "--max-points", type=int, default=200_000,
@@ -4463,8 +4763,28 @@ def _add_karyotype_args(p) -> None:
              "don't emit it). Default 20.",
     )
     p.add_argument(
-        "--ymax", type=float, default=5.0,
-        help="upper limit for the CN axis. Default 5.0.",
+        "--no-phased-baf", action="store_true",
+        help="always draw the per-site BAF panel, even when the VCF is "
+             "phased. By default, if the small-variant VCF carries "
+             "FORMAT/PS and FORMAT/AD, het read counts are summed "
+             "within each phase block over tiling windows of "
+             "het SNVs and plotted mirrored, which resolves allelic "
+             "imbalance far better than per-site fractions. Phase is "
+             "never required -- an unphased VCF simply gets the "
+             "per-site panel.",
+    )
+    p.add_argument(
+        "--ymax", type=float, default=1.5,
+        help="upper limit of the log2 relative-depth axis. Default 1.5 "
+             "(a little above CN 3 at log2 0.585). NOTE: this axis is "
+             "log2, not linear CN, from v0.5.0 onward -- a value that "
+             "made sense as a CN limit (e.g. 5) will not here.",
+    )
+    p.add_argument(
+        "--ymin", type=float, default=-2.0,
+        help="lower limit of the log2 relative-depth axis. Default -2.0 "
+             "(two doublings below the diploid band, enough to show "
+             "homozygous-loss and single-copy X / Y clouds).",
     )
     p.add_argument(
         "--sex", choices=("male", "female", "auto"), default="auto",
@@ -5030,7 +5350,10 @@ def karyotype_main(args: argparse.Namespace) -> int:
     lengths = chrom_lengths_from_cb(cb)
 
     if mask_path is not None:
-        excluded = annotate_mask(cov, mask_path, bin_size, lengths)
+        excluded = annotate_mask(
+            cov, mask_path, bin_size, lengths,
+            min_overlap_frac=args.mask_overlap,
+        )
         mask_label = mask_path.name
     else:
         excluded = np.zeros(len(cov), dtype=bool)
@@ -5097,6 +5420,7 @@ def karyotype_main(args: argparse.Namespace) -> int:
 
     baf_df: pd.DataFrame | None = None
     baf_source: str | None = None
+    baf_mode = "per-site"
     n_baf_sites = 0
     if args.vcf is not None:
         print(f"reading BAF VCF: {args.vcf}")
@@ -5116,6 +5440,29 @@ def karyotype_main(args: argparse.Namespace) -> int:
             f"with DP>={args.min_baf_dp}, "
             f"GQ>={args.min_baf_gq} (when present)",
         )
+        # Phase is an upgrade, never a requirement: if the caller
+        # emitted PS + AD we aggregate within phase blocks, otherwise
+        # the per-site panel stands.
+        if not args.no_phased_baf:
+            phased = aggregate_phased_baf(baf_df)
+            if phased is not None:
+                n_phased = int(
+                    ((baf_df["ps"] >= 0) & baf_df["h1"].notna()).sum(),
+                )
+                print(
+                    f"[info] BAF: phased -- {n_phased:,} of "
+                    f"{n_baf_sites:,} sites carry PS + AD; aggregated "
+                    f"into {len(phased) // 2:,} phase-block windows of "
+                    f"up to {KARY_BAF_SNPS_PER_WIN} het SNVs, plotted "
+                    f"mirrored",
+                )
+                baf_df = phased
+                baf_mode = "phased"
+            else:
+                print(
+                    "[info] BAF: per-site (no usable PS + AD; phased "
+                    "aggregation needs both)",
+                )
 
     print("rendering genome-wide figure")
     genome_png, scatter_bin_label = render_karyotype_genome_png(
@@ -5131,6 +5478,7 @@ def karyotype_main(args: argparse.Namespace) -> int:
         reference=args.reference,
         mosdepth_source=args.mosdepth.name,
         baf_source=baf_source,
+        baf_mode=baf_mode,
         sex=sex,
         bin_size=bin_size,
         scatter_bin_label=scatter_bin_label,

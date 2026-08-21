@@ -15,10 +15,10 @@ All bundled in `molamola/data/`:
 - `cytoBand.txt.gz` (hg38) and `cytoBand.t2t.txt.gz` (T2T-CHM13v2.0) — UCSC cytoband annotations for SV and karyotype modes.
 - `canonical_exons.hg38.tsv.gz` — MANE Select v1.5 canonical-transcript span + per-exon coordinates (~19,200 protein-coding genes).
 - `clinvar.hg38.tsv.xz` — molamola's reduced ClinVar TSV (~12 MB; xz-compressed; release date logged in each report's run-metadata). The `--clinvar` flag accepts either this TSV or NCBI's raw ClinVar VCF (auto-detected by extension).
-- `exclusion.hg38.bed.gz`, `exclusion.t2t.bed.gz` — karyotype-mode exclusion masks (~5.7 MB / ~6 MB; low-mappability ∪ polymorphic-TR catalog). Override with `--mask`, disable with `--no-mask`.
+- `exclusion.hg38.bed.gz`, `exclusion.t2t.bed.gz` — karyotype-mode exclusion masks (~5.7 MB / ~6 MB; low-mappability ∪ polymorphic-TR catalog), built from 500 bp runs. A bin is dropped when more than `--mask-overlap` of it is masked. Override with `--mask`, disable with `--no-mask`.
 - `gc_10kb.hg38.bed.gz`, `gc_10kb.t2t.bed.gz` — karyotype-mode 10 kb GC tables (~1.5 MB each) driving the per-1 % GC-bucket median-ratio correction. Override with `--gc`, disable with `--no-gc`.
 
-molamola is bundled-only by design — no auto-download, no online lookups. The bundled-data total is ~28 MB. All bundled refs are reproducibly regeneratable from public sources by running `scripts/derive_canonical_exons.py`, `scripts/derive_clinvar_for_molamola.py`, and `scripts/derive_karyotype_refs.py`.
+molamola is bundled-only by design — no auto-download, no online lookups. The bundled-data total is ~30 MB. All bundled refs are reproducibly regeneratable from public sources by running `scripts/derive_canonical_exons.py`, `scripts/derive_clinvar_for_molamola.py`, and `scripts/derive_karyotype_refs.py`.
 
 ## Circos plot (SV mode)
 
@@ -49,10 +49,12 @@ One panel per plotted gene. Top-down:
 
 One genome-wide figure, chr1 → chrY left to right:
 
-- **CN scatter** — per-bin copy number after masking + GC correction, anchored so the autosomal non-masked median sits at CN 2.0. Aggregated into ~`--scatter-bin-kb` windows; systematically downsampled above `--max-points`.
-- **Rolling-median smooth** — a deep-pink per-chromosome line (`--smooth-window-mb` window), the load-bearing signal for arm-scale CN events.
+- **log2 relative-depth scatter** — per-bin `log2(depth / autosomal median)` after masking + GC correction, so CN 2 sits at 0 and a single-copy loss and gain read symmetrically. CN 1 / 2 / 3 reference lines are labelled at the right edge. Adjacent chromosomes alternate between two inks and every other chromosome carries a background band, so a deviation can be attributed without tracing back to the axis; chrX and chrY have their own inks and a legend. Aggregated into ~`--scatter-bin-kb` windows; systematically downsampled above `--max-points`.
+- **Rolling-median smooth** — a deep-pink per-chromosome line (`--smooth-window-mb` window, default 10 Mb), the load-bearing signal for arm-scale CN events.
 - **Expected-CN dashes** — Oxford-blue horizontal guides at the expected CN for each chromosome given the inferred (or `--sex`-forced) genomic sex.
-- **BAF panel** (only when `--vcf` is given) — B-allele fraction of PASS heterozygous SNVs beneath the CN panel, sharing the x-axis. Drifts to 0.33 / 0.67 over gains, splays toward 0 / 1 over deletions / LOH.
+- **BAF panel** (only when `--vcf` is given) — allele balance at PASS heterozygous SNVs beneath the CN panel, sharing the x-axis. Reference lines sit at 33 / 50 / 67 % — the CN 3 het expectations — so a gain reads as the cloud splitting onto the outer two lines rather than as a vague widening; deletions / LOH splay toward 0 and 100 %.
+  - **Phased VCF** (`FORMAT/PS` + `FORMAT/AD` present): haplotype-resolved. Read counts are summed within each phase block over tiling windows of 40 het SNVs — summing reads rather than averaging per-site fractions is the variance-correct estimator — and each window is plotted twice, at *v* and *1−v*, because which haplotype a block labels "1" is arbitrary and flips between blocks. A systematic reference-mapping bias is absorbed by shifting the autosomal median onto 50 %. On a normal ONT genome this tightens the panel about 1.4× versus per-site (SD 0.058 vs 0.079), which is what puts the CN 3 expectation ~2.9 SD clear of balanced.
+  - **Unphased VCF**: per-site het allele fraction, as before. Phase is an upgrade, never a requirement; `--no-phased-baf` forces the per-site panel. The mode used is recorded in the report's metadata block.
 - **Metadata strip** across the top: mosdepth source, reference, inferred sex, bin sizes, smooth window, mask / GC labels, BAF source, and an **"AS suspected"** chip when the autosomal depth distribution looks bimodal (adaptive-sampling-like — CN normalisation may be biased on such samples; the CLI also prints a one-line warning).
 
 The per-chromosome 3 × 8 A4-portrait grid that briefly shipped in v0.3 development was dropped before release — the genome-wide figure does the cytogenetics work on its own.

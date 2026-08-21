@@ -189,7 +189,7 @@ molamola --mosdepth sample.regions.bed.gz \
     --reference hg38 --out reports/
 ```
 
-The VCF is consumed only as the BAF source — its header shape is not used for dispatch. A BAF panel renders beneath the CN scatter, sharing the x-axis.
+The VCF is consumed only as the BAF source — its header shape is not used for dispatch. A BAF panel renders beneath the depth panel, sharing the x-axis — haplotype-resolved when the VCF carries `FORMAT/PS` + `FORMAT/AD`, per-site otherwise.
 
 ### T2T-CHM13v2.0
 
@@ -221,7 +221,7 @@ molamola --mosdepth sample.regions.bed.gz --reference hg38 --out reports/ \
     --smooth-window-mb 1.0 --scatter-bin-kb 100 --ymax 4
 ```
 
-If the run-metadata shows an **"AS suspected"** chip, the sample looks like adaptive sampling and the CN scale is biased (anchored on the off-target background) — interpret the CN axis with care.
+If the run-metadata shows an **"AS suspected"** chip, the sample looks like adaptive sampling and the CN scale is biased (anchored on the off-target background) — interpret the depth axis with care.
 
 ## Verify a VCF before plotting
 

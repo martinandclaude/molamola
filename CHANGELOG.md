@@ -3,6 +3,29 @@
 All notable changes to molamola are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] — 2026-08-21
+
+### Added
+
+- **Haplotype-resolved BAF panel, used automatically when the VCF is phased.** If the small-variant VCF carries `FORMAT/PS` and `FORMAT/AD`, het read counts are summed within each `(chrom, PS)` phase block over tiling windows of 40 het SNVs (also split on a >1 Mb positional gap), giving a depth-weighted haplotype-1 fraction per window. Summing reads rather than averaging per-site fractions is the variance-correct estimator. Each window is plotted twice, at *v* and *1−v*, because which haplotype a block labels "1" is arbitrary and flips between blocks, so the track is invariant to that flip. A systematic reference-mapping bias is absorbed by shifting the autosomal median onto 50 %. On a normal ONT genome this tightens the panel ~1.4× versus per-site (SD 0.058 vs 0.079), putting the CN 3 expectation ~2.9 SD clear of balanced. Phase is **never required** — molamola is a plotting tool and takes whatever VCF it is handed, so an unphased VCF still gets the per-site panel, and `--no-phased-baf` forces per-site regardless. The mode used is printed at run time and recorded in the report metadata.
+
+### Fixed
+
+- **The exclusion mask over-excluded on any mosdepth bin coarser than 500 bp.** `annotate_mask()` flagged a bin if it touched a mask interval at all. The bundled masks are built from 500 bp runs (median interval exactly 500 bp), so on a 1 kb mosdepth run a half-bin hit removed the whole bin: a mask covering **39.8 %** of hg38 excluded **57.8 %** of bins. Those bins are dropped from the CN normalisation anchor as well as from the plot, so this moved the numbers, not just the picture. Overlap is now measured in base pairs and a bin is dropped only when **more than** `--mask-overlap` (default 0.5) of it is masked. On a 1 kb run the excluded fraction falls from 57.8 % to 23.6 %. The cut is empirical, not just geometric: half-masked 1 kb bins measure like clean sequence (SD 0.230 log2 vs 0.225 for clean bins), while fully-masked bins have SD 1.072. `--mask-overlap 0` restores the old any-overlap behaviour. At 500 bp bins the two rules agree exactly.
+
+### Changed
+
+- **Karyotype CN panel is now log2 relative depth instead of linear CN.** A linear 0-5 CN axis spent more than half its height above CN 2.5 where there is no data, compressing the deviations that matter. The panel plots `log2(depth / autosomal median)`, so a single-copy loss and a single-copy gain read symmetrically, with CN 1 / 2 / 3 reference lines labelled at the right edge. **`--ymax` is now in log2 units** (default 1.5, was 5.0 in CN units) and a matching `--ymin` (default -2.0) is added — a value that made sense as a CN limit will not make sense here.
+- **Chromosomes are now visually separable.** Adjacent chromosomes alternate between two scatter inks and every other chromosome gets a background band, so a deviation can be attributed without tracing back to the axis. chrX and chrY get their own inks with a legend, making a single-copy sex-chromosome pattern legible at a glance.
+- **BAF reference lines moved from 25 / 50 / 75 % to 33 / 50 / 67 %** — the CN 3 het expectations, so a trisomy reads as the cloud splitting onto two lines rather than as a vague widening. Tick labels are percentages, matching the rest of molamola's user-facing output.
+- **`--smooth-window-mb` default raised from 0.5 to 10.** The 0.5 Mb default was tuned for the per-chromosome grid dropped in v0.3; across a single 3.1 Gb axis it produces roughly 6,200 sub-pixel wiggles that render as a solid band over the scatter rather than as a trend line.
+- **The run-metadata strip is no longer drawn on the figure.** Sample / build / sex / bin / smooth crowded the arm ticks; the same information (including the "AS suspected" chip) is already in the HTML report's metadata block, which is the headline output. Note this does mean a standalone `--png` no longer carries its own provenance line.
+- **Arm labels are rotated upright** so the short arms on chr17-22 stop overprinting each other, and the panels are taller (genome-only 4.8 -> 6.4 in, with BAF 6.4 -> 8.6 in) to give the point cloud room to read as a distribution.
+
+### Notes
+
+- GC correction was reviewed against PIKA's LOESS approach and deliberately left alone: molamola's per-1 %-bucket median-ratio correction already removes GC bias completely (per-bucket median spread 0.085 log2 raw -> 0.000 corrected). LOESS is a smoother fit, not a better one.
+
 ## [0.4.0] — 2026-08-21
 
 ### Added

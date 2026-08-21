@@ -17,7 +17,9 @@ def test_read_baf_keeps_het_pass_only(tiny_baf):
     """Hom, non-PASS, low-DP, multi-allelic, non-canonical chrom all dropped."""
     df = mm.read_baf_vcf(tiny_baf, min_dp=10)
     assert len(df) == 5
-    assert list(df.columns) == ["chrom", "pos", "baf"]
+    # Phase columns are carried alongside for the phased panel; the
+    # per-site panel only needs these three.
+    assert {"chrom", "pos", "baf"}.issubset(df.columns)
     # Expected rows: chr1:1000, chr1:2000, chr2:100, chrX:200, chrY:300
     by_chrom = df.groupby("chrom", observed=True)["pos"].apply(list).to_dict()
     assert by_chrom["chr1"] == [1000, 2000]
@@ -62,7 +64,9 @@ def test_read_baf_empty_returns_empty_df(tmp_path):
     )
     df = mm.read_baf_vcf(vcf, min_dp=10)
     assert len(df) == 0
-    assert list(df.columns) == ["chrom", "pos", "baf"]
+    # Phase columns are carried alongside for the phased panel; the
+    # per-site panel only needs these three.
+    assert {"chrom", "pos", "baf"}.issubset(df.columns)
 
 
 def test_read_baf_chrom_is_canonical_categorical(tiny_baf):

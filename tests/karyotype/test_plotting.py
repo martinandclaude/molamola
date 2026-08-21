@@ -86,16 +86,46 @@ def test_kary_plot_coverage_draws_scatter_smooth_and_expected(fresh_ax):
         "xpos": [0.0, 1.0, 2.0, 3.0, 4.0],
         "smooth": [2.0, 2.0, 2.0, 2.0, 2.0],
     })
-    expected_lines = [(0.0, 4.0, 2.0)]
+    chrom_spans = [("chr1", 0.0, 4.0, 2.0)]
     n_lines_before = len(fresh_ax.lines)
     mm._kary_plot_coverage(
-        fresh_ax, scatter_df, smooth_df, expected_lines, ymax=5.0,
+        fresh_ax, scatter_df, smooth_df, chrom_spans, ymin=-2.0, ymax=1.5,
     )
-    # 1 smooth line + 1 expected line = 2 lines (scatter is a collection)
-    assert len(fresh_ax.lines) - n_lines_before == 2
+    # 3 CN reference axhlines + 1 smooth + 1 per-chrom expected line
+    assert len(fresh_ax.lines) - n_lines_before == 3 + 1 + 1
     assert len(fresh_ax.collections) >= 1
-    assert fresh_ax.get_ylim() == (0.0, 5.0)
-    assert fresh_ax.get_ylabel() == "CN"
+    assert fresh_ax.get_ylim() == (-2.0, 1.5)
+    assert "log" in fresh_ax.get_ylabel()
+
+
+def test_kary_plot_coverage_is_log2_not_linear_cn():
+    """CN 2 must land on 0, CN 1 on -1, CN 4 on +1."""
+    assert float(mm.cn_to_log2(2.0)) == pytest.approx(0.0)
+    assert float(mm.cn_to_log2(1.0)) == pytest.approx(-1.0)
+    assert float(mm.cn_to_log2(4.0)) == pytest.approx(1.0)
+    assert float(mm.cn_to_log2(3.0)) == pytest.approx(0.585, abs=1e-3)
+
+
+def test_cn_to_log2_drops_non_positive_instead_of_minus_inf():
+    """Zero-depth bins must not drag the axis to -inf."""
+    out = mm.cn_to_log2([0.0, -1.0, 2.0])
+    assert np.isnan(out[0]) and np.isnan(out[1])
+    assert out[2] == pytest.approx(0.0)
+
+
+def test_sex_chromosomes_get_their_own_ink():
+    """A single-copy X / Y pattern should be legible without counting
+    across to the axis."""
+    assert mm._kary_chrom_ink("chrX", 0) == mm.KARY_CHRX
+    assert mm._kary_chrom_ink("chrY", 1) == mm.KARY_CHRY
+    assert mm._kary_chrom_ink("chr1", 0) == mm.KARY_AUTO_A
+    assert mm._kary_chrom_ink("chr2", 1) == mm.KARY_AUTO_B
+
+
+def test_adjacent_autosomes_alternate_ink():
+    inks = [mm._kary_chrom_ink(f"chr{i+1}", i) for i in range(6)]
+    for a, b in zip(inks, inks[1:]):
+        assert a != b
 
 
 def test_kary_plot_baf_draws_scatter_and_grid(fresh_ax):
@@ -106,7 +136,7 @@ def test_kary_plot_baf_draws_scatter_and_grid(fresh_ax):
     })
     n_lines_before = len(fresh_ax.lines)
     mm._kary_plot_baf(fresh_ax, baf_df)
-    # 3 axhline (0.25, 0.5, 0.75)
+    # 3 axhline at the CN-meaningful levels (1/3, 1/2, 2/3)
     assert len(fresh_ax.lines) - n_lines_before == 3
     assert len(fresh_ax.collections) >= 1
     assert fresh_ax.get_ylim() == (0.0, 1.0)
@@ -196,7 +226,7 @@ def test_plotting_does_not_leak_rcparams(fresh_ax, cb, tiny_regions):
         cov2, bin_size, window_mb=3.0, mask_pass=cov2["mask_pass"].to_numpy(),
     )
     mm._kary_plot_coverage(
-        fresh_ax, cov2, smooth, [(0.0, 1e9, 2.0)], ymax=5.0,
+        fresh_ax, cov2, smooth, [("chr1", 0.0, 1e9, 2.0)], ymin=-2.0, ymax=1.5,
     )
     baf = pd.DataFrame({"xpos": [0.0, 1.0], "baf": [0.5, 0.5]})
     mm._kary_plot_baf(fresh_ax, baf)

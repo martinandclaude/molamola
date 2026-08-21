@@ -60,20 +60,23 @@ Active when the input VCF carries `##INFO=<ID=CSQ,...>` AND `##FORMAT=<ID=PS,...
 
 ## Karyotype-mode flags
 
-Active when `--mosdepth PATH` is given. Produces one HTML with a genome-wide CN scatter + rolling-median smooth; an optional BAF panel is added beneath when `--vcf` is also supplied.
+Active when `--mosdepth PATH` is given. Produces one HTML with a genome-wide log2 relative-depth scatter + rolling-median smooth; an optional BAF panel is added beneath when `--vcf` is also supplied.
 
 | flag | default | description |
 |---|---|---|
-| `--mask PATH` | bundled | override the bundled exclusion mask (`data/exclusion.{hg38,t2t}.bed.gz`). Bins overlapping the mask drop out of the CN scatter, the smooth line, and the autosomal-median normalisation anchor. |
+| `--mask PATH` | bundled | override the bundled exclusion mask (`data/exclusion.{hg38,t2t}.bed.gz`). Bins more than `--mask-overlap` inside the mask drop out of the depth scatter, the smooth line, and the autosomal-median normalisation anchor. |
 | `--no-mask` | off | disable masking entirely (use every bin). |
+| `--mask-overlap F` | `0.5` | drop a bin only when more than this fraction of it is masked. The bundled masks are 500 bp-resolution, so an any-overlap rule (`0`) scales exclusion with your mosdepth bin size rather than with the mask — on a 1 kb run that excluded 57.8 % of bins for a mask covering 39.8 % of hg38. `0` restores the pre-v0.5.0 behaviour. |
 | `--gc PATH` | bundled | override the bundled 10 kb GC table (`data/gc_10kb.{hg38,t2t}.bed.gz`). Drives a per-1 % GC-bucket median-ratio correction applied to depth before normalisation. |
 | `--no-gc` | off | disable GC correction. |
 | `--centromere-pad-kb N` | `1000` | extend the exclusion mask by N kb either side of each `acen` band. Centromeric depth is unreliable on ONT even after the polymorphic-TR mask. |
 | `--scatter-bin-kb N` | `50` | aggregation window (kb) for the CN scatter cloud. |
-| `--smooth-window-mb N` | `0.5` | rolling-median window (Mb) for the deep-pink smooth line. |
+| `--smooth-window-mb N` | `10` | rolling-median window (Mb) for the deep-pink smooth line. Below ~3 Mb the line renders as a band across a 3.1 Gb axis rather than as a trend; tighten it when hunting focal rather than arm-scale events. |
 | `--max-points N` | `200000` | hard cap on scatter points (systematic downsample above this). |
 | `--max-baf-points N` | `80000` | hard cap on BAF points. |
 | `--min-baf-dp N` | `10` | minimum `FORMAT/DP` for a het site to enter the BAF panel. |
 | `--min-baf-gq N` | `20` | minimum `FORMAT/GQ` for a het site to enter the BAF panel. Applied only when GQ is present in the VCF (some callers don't emit it). |
-| `--ymax N` | `5.0` | upper limit of the CN axis; higher events clip to the top edge by design. |
+| `--no-phased-baf` | off | force the per-site BAF panel even when the VCF is phased. By default, if the small-variant VCF carries `FORMAT/PS` and `FORMAT/AD`, het read counts are summed within each phase block over tiling windows of 40 het SNVs and plotted mirrored (both *v* and *1−v*, since which haplotype a block calls "1" is arbitrary). Phase is never required — an unphased VCF simply gets the per-site panel. |
+| `--ymax N` | `1.5` | upper limit of the **log2** relative-depth axis (CN 3 sits at 0.585). Units changed from CN to log2 in v0.5.0. |
+| `--ymin N` | `-2.0` | lower limit of the log2 relative-depth axis. |
 | `--sex {male,female,auto}` | `auto` | genomic sex for the expected-CN dashes. `auto` calls male iff chrY median CN > 0.3. The HTML wording is "inferred genomic sex" — a heuristic, not a clinical call. |

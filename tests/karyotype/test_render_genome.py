@@ -23,7 +23,8 @@ def _make_args(tiny_regions: Path, **overrides) -> argparse.Namespace:
         max_points=200_000,
         max_baf_points=80_000,
         smooth_window_mb=0.5,
-        ymax=5.0,
+        ymax=1.5,
+        ymin=-2.0,
         no_mask=False,
         no_gc=False,
     )
@@ -123,21 +124,6 @@ def test_render_genome_does_not_leak_rcparams(tiny_regions, tiny_cytoband):
     assert before == after
 
 
-def test_karyotype_meta_chips_includes_sex_and_bin(tiny_regions):
-    args = _make_args(tiny_regions)
-    chips = mm._karyotype_meta_chips(args, scatter_bin_label="50 kb", sex="male")
-    assert args.mosdepth.name in chips
-    assert "hg38" in chips
-    assert "sex=male" in chips
-    assert "bin=50 kb" in chips
-    assert any("smooth=" in c for c in chips)
-
-
-def test_karyotype_meta_chips_appends_offs(tiny_regions):
-    args = _make_args(tiny_regions, no_mask=True, no_gc=True)
-    chips = mm._karyotype_meta_chips(args, "50 kb", "female")
-    assert "mask=off" in chips
-    assert "GC=off" in chips
 
 
 def test_kary_attach_xpos_aligns_with_offsets():

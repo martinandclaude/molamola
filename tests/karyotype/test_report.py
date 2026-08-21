@@ -22,7 +22,10 @@ def test_karyotype_report_full_run_renders_html(tmp_path, tiny_regions):
     assert "<title>molamola karyotype" in body
     assert "inferred genomic sex" in body
     assert "scatter bin" in body
-    assert "smooth: 0.5 Mb" in body
+    # Read the default off the parser rather than hardcoding it, so a
+    # retuned default does not silently rot this assertion.
+    smooth_default = mm.build_argparser().get_default("smooth_window_mb")
+    assert f"smooth: {smooth_default} Mb" in body
     assert "mask: off" in body
     assert "GC: off" in body
 
