@@ -9,6 +9,7 @@ and the colorbar they are read against share one norm.
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 from matplotlib.colors import to_rgb
 
@@ -198,3 +199,106 @@ def test_overcrowded_labels_are_drawn_and_counted_not_dropped():
 
 def test_no_labels_is_not_an_error():
     assert mm._draw_vaf_labels(_FakeCircos(), [], {"chr1": 1000}) == (0, 0)
+
+
+# --- colour-vision deficiency ---------------------------------------------
+#
+# The VAF classes were picked under simulated CVD, not by eye. Two things
+# had gone wrong with an eye-picked palette and neither was visible to
+# normal vision: `het` and `hom` sat at the same lightness so they merged
+# under tritanopia, and `het` desaturated to near-grey under deuteranopia
+# -- the same grey molamola uses for noise-flagged BNDs, so for ~6 % of
+# men real het breakends read as artefacts. These tests pin both.
+
+# Machado et al. (2009) severity-1.0 matrices, linear sRGB.
+_CVD_MATRICES = {
+    "protan": ((0.152286, 1.052583, -0.204868),
+               (0.114503, 0.786281, 0.099216),
+               (-0.003882, -0.048116, 1.051998)),
+    "deutan": ((0.367322, 0.860646, -0.227968),
+               (0.280085, 0.672501, 0.047413),
+               (-0.011820, 0.042940, 0.968881)),
+    "tritan": ((1.255528, -0.076749, -0.178779),
+               (-0.078411, 0.930809, 0.147602),
+               (0.004733, 0.691367, 0.303900)),
+}
+
+
+def _to_linear(c):
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
+def _simulate(color, kind):
+    """Return `color` as seen with the given dichromacy."""
+    rgb = _to_linear(np.array(to_rgb(color)))
+    if kind != "normal":
+        rgb = np.array(_CVD_MATRICES[kind]) @ rgb
+    return np.clip(rgb, 0.0, 1.0)
+
+
+def _lab(linear_rgb):
+    m = np.array([[0.4124, 0.3576, 0.1805],
+                  [0.2126, 0.7152, 0.0722],
+                  [0.0193, 0.1192, 0.9505]])
+    xyz = m @ linear_rgb
+    wp = np.array([0.95047, 1.0, 1.08883])
+
+    def f(t):
+        return t ** (1 / 3) if t > 0.008856 else 7.787 * t + 16 / 116
+
+    fx, fy, fz = (f(v) for v in xyz / wp)
+    return np.array([116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)])
+
+
+def _blend(color, alpha):
+    """Colour as actually drawn: alpha-composited over the page.
+
+    Arcs render at alpha 0.70 and noise-flagged arcs at 0.18, which
+    lifts both toward the background. Judging the raw hex values
+    overstates how distinct they are on the plot.
+    """
+    fg, bg = np.array(to_rgb(color)), np.array(to_rgb(mm.PAPER_BG))
+    return tuple(alpha * fg + (1 - alpha) * bg)
+
+
+ARC_ALPHA = 0.70
+NOISE_ALPHA = 0.18
+
+
+def _delta_e(a, b, kind):
+    return float(np.linalg.norm(_lab(_simulate(a, kind)) - _lab(_simulate(b, kind))))
+
+
+CVD_KINDS = ["normal", "protan", "deutan", "tritan"]
+
+
+@pytest.mark.parametrize("kind", CVD_KINDS)
+def test_classes_stay_distinct_under_colour_blindness(kind):
+    drawn = [_blend(c, ARC_ALPHA) for c in mm.VAF_CLASS_COLORS]
+    worst = min(_delta_e(drawn[i], drawn[j], kind)
+                for i in range(len(drawn)) for j in range(i + 1, len(drawn)))
+    assert worst >= 30, f"{kind}: closest VAF classes are only dE {worst:.1f} apart"
+
+
+@pytest.mark.parametrize("kind", CVD_KINDS)
+def test_no_class_looks_like_a_noise_flagged_bnd(kind):
+    """A VAF class that lands on the noise grey makes real events read as
+    artefacts -- worse than merely being hard to tell apart."""
+    noise = _blend(mm.NOISE_COLOR, NOISE_ALPHA)
+    worst = min(_delta_e(_blend(c, ARC_ALPHA), noise, kind)
+                for c in mm.VAF_CLASS_COLORS)
+    assert worst >= 25, f"{kind}: a VAF class is only dE {worst:.1f} from noise"
+
+
+def test_every_class_is_legible_as_drawn():
+    """The 3:1 floor has to hold on the composited colour, not the raw
+    hex -- alpha 0.70 costs about a third of the nominal contrast."""
+    for color in mm.VAF_CLASS_COLORS:
+        assert _contrast_on_paper(_blend(color, ARC_ALPHA)) >= 3.0, color
+
+
+def test_lightness_is_monotonic_with_vaf():
+    """Ordering must survive even total loss of hue discrimination, so
+    lightness carries it as well as hue."""
+    lightness = [_lab(_simulate(c, "normal"))[0] for c in mm.VAF_CLASS_COLORS]
+    assert lightness == sorted(lightness, reverse=True), lightness

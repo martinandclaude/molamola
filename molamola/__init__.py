@@ -33,7 +33,7 @@ rather than silently producing a default plot.
 
 from __future__ import annotations
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 import argparse
 import base64
@@ -126,14 +126,29 @@ SV_COV_FILTER_TYPES: tuple[str, ...] = ("DEL", "DUP")
 #: homozygous.
 VAF_CLASS_EDGES: tuple[float, ...] = (0.0, 0.33, 0.66, 1.0)
 
-#: One colour per class, low to high. Every entry clears 3:1 contrast
-#: against the white plot background; plasma's yellow end managed only
-#: 1.6-2.0:1, which is what made the highest-VAF arcs - the rarest and
-#: most interesting ones - the hardest to see.
+#: One colour per class, low to high. Chosen under simulated
+#: colour-vision deficiency (Machado et al. 2009) rather than by eye,
+#: and evaluated on the colours **as drawn** -- arcs render at alpha
+#: 0.70 over :data:`PAPER_BG`, which lifts every colour toward the page
+#: and costs roughly a third of the nominal contrast. Judging the raw
+#: hex values instead is how a palette ends up looking fine in a swatch
+#: and washed out on the plot.
+#:
+#: Constraints, all binding on the blended colour:
+#:
+#: 1. every class clears 3:1 contrast against the page;
+#: 2. classes stay apart under normal, protan, deutan and tritan vision
+#:    (worst case dE 37.2, up from 11.3). The previous palette put het
+#:    and hom at nearly the same lightness, so they differed almost only
+#:    in hue and merged under tritanopia;
+#: 3. no class lands on :data:`NOISE_COLOR` (worst case dE 35.0).
+#:
+#: Lightness also decreases monotonically with VAF, so the ordering
+#: survives even a total loss of hue discrimination.
 VAF_CLASS_COLORS: tuple[str, ...] = (
-    "#5A189A",  # 0 - 33 %    mosaic / subclonal
-    "#C42A78",  # 33 - 66 %   het
-    "#B34A00",  # 66 - 100 %  hom
+    "#035AF3",  # 0 - 33 %    mosaic / subclonal
+    "#634980",  # 33 - 66 %   het
+    "#781B00",  # 66 - 100 %  hom
 )
 
 #: Class names, in the same order as :data:`VAF_CLASS_COLORS`. Used to

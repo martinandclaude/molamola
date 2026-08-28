@@ -22,7 +22,7 @@ molamola is bundled-only by design — no auto-download, no online lookups. The 
 
 ## Circos plot (SV mode)
 
-Outer ring: cytoband ideogram (default pyCirclize colours). Inner ribbons: each PASS BND, line-thickness scaled by `SUPPORT`, colour by VAF class (three discrete bands: mosaic 0-33 %, het 33-66 %, hom 66-100 %). Noise-flagged BNDs render grey/dashed at low alpha so the eye goes to the candidate signal. With `--plotvaf`, each drawn arc also carries its VAF as a percentage on the rim.
+Outer ring: cytoband ideogram (default pyCirclize colours). Inner ribbons: each PASS BND, line-thickness scaled by `SUPPORT`, colour by VAF class (three discrete bands: mosaic 0-33 %, het 33-66 %, hom 66-100 %; the class colours are chosen under simulated colour-vision deficiency and stay distinct under protanopia, deuteranopia and tritanopia, with lightness increasing across the classes so the ordering survives even total loss of hue discrimination). Noise-flagged BNDs render grey/dashed at low alpha so the eye goes to the candidate signal. With `--plotvaf`, each drawn arc also carries its VAF as a percentage on the rim.
 
 ## Genome SV map (SV mode)
 

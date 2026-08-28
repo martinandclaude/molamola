@@ -3,6 +3,12 @@
 All notable changes to molamola are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] — 2026-08-29
+
+### Changed
+
+- **VAF class colours recoloured for colour-vision deficiency.** `mosaic` / `het` / `hom` are now `#035AF3` / `#634980` / `#781B00`. The previous palette put `het` and `hom` at nearly the same lightness, so they differed almost only in hue and merged under tritanopia (ΔE 11.3 as drawn — below the level at which two thin arcs can be told apart). Colours are now selected under simulated CVD (Machado et al. 2009) and, importantly, evaluated on the colours **as drawn**: arcs render at alpha 0.70 over the page, which costs about a third of the nominal contrast, so judging raw hex values overstates how distinct they actually are. Worst-case class separation across normal, protan, deutan and tritan vision is now ΔE 37.2, every class still clears 3:1 against the page as composited, no class lands within ΔE 25 of the noise grey, and lightness is monotone with VAF so the ordering survives even total loss of hue discrimination. `tests/test_vaf_colors.py` pins all four of these.
+
 ## [0.5.0] — 2026-08-21
 
 ### Added
