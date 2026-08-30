@@ -1,7 +1,8 @@
 ##fileformat=VCFv4.2
 ##INFO=<ID=CSQ,Number=.,Type=String,Description="Consequence annotations from Ensembl VEP. Format: Allele|Consequence|SYMBOL|Feature|HGVSc|HGVSp|CANONICAL">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=PS,Number=1,Type=Integer,Description="Phase set">
 ##contig=<ID=chr1,length=248956422>
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	PATIENT123
-chr1	1100	v1	A	T	.	PASS	CSQ=T|missense_variant|GENE_A|NM_001.1|c.10A>T|p.Asn4Ile|YES	GT	0/1
-chr1	1500	v2	G	C	.	PASS	CSQ=C|missense_variant|GENE_A|NM_001.1|c.50G>C|p.Gly17Arg|YES	GT	0/1
+chr1	1100	v1	A	T	.	PASS	CSQ=T|missense_variant|GENE_A|NM_001.1|c.10A>T|p.Asn4Ile|YES	GT:PS	0|1:12345
+chr1	1500	v2	G	C	.	PASS	CSQ=C|missense_variant|GENE_A|NM_001.1|c.50G>C|p.Gly17Arg|YES	GT:PS	1|0:12345

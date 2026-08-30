@@ -3,47 +3,31 @@
 Each run writes a single self-contained HTML artefact into `--out` (required — molamola refuses rather than silently writing next to the input file; the directory is created if absent). The filename and contents differ by mode:
 
 - **SV mode** → `<sample>.report.html` (circos plot + linear cytoband SV map embedded as base64 PNG data URIs, plus a collapsible run-metadata block).
-- **Compound-het mode** → `<sample>.compound_het.report.html` (one phased-haplotype panel per gene, embedded the same way; auto-select runs split into a `strict` and `extended` section).
 - **Karyotype mode** → `<sample>.karyotype.report.html` (one genome-wide CN figure, with a BAF panel beneath when `--vcf` is supplied; same metadata block).
 
-With `--png` (added in v0.2.0 for MultiQC / pipeline embeds), each embedded figure is *also* written as a standalone PNG alongside the HTML — SV mode writes the circos + SV-map PNGs, compound-het writes one PNG per gene (gene symbol baked into the title, top-left, bold, so a saved image is self-describing), karyotype mode writes `<sample>.karyotype.genome.png`. Without `--png` the figures live only inside the HTML; right-click → save to extract one ad hoc.
+With `--png` (added in v0.2.0 for MultiQC / pipeline embeds), each embedded figure is *also* written as a standalone PNG alongside the HTML — SV mode writes the circos + SV-map PNGs, karyotype mode writes `<sample>.karyotype.genome.png`. Without `--png` the figures live only inside the HTML; right-click → save to extract one ad hoc.
 
 ## Reference data
 
 All bundled in `molamola/data/`:
 
 - `cytoBand.txt.gz` (hg38) and `cytoBand.t2t.txt.gz` (T2T-CHM13v2.0) — UCSC cytoband annotations for SV and karyotype modes.
-- `canonical_exons.hg38.tsv.gz` — MANE Select v1.5 canonical-transcript span + per-exon coordinates (~19,200 protein-coding genes).
-- `clinvar.hg38.tsv.xz` — molamola's reduced ClinVar TSV (~12 MB; xz-compressed; release date logged in each report's run-metadata). The `--clinvar` flag accepts either this TSV or NCBI's raw ClinVar VCF (auto-detected by extension).
 - `exclusion.hg38.bed.gz`, `exclusion.t2t.bed.gz` — karyotype-mode exclusion masks (~5.7 MB / ~6 MB; low-mappability ∪ polymorphic-TR catalog), built from 500 bp runs. A bin is dropped when more than `--mask-overlap` of it is masked. Override with `--mask`, disable with `--no-mask`.
 - `gc_10kb.hg38.bed.gz`, `gc_10kb.t2t.bed.gz` — karyotype-mode 10 kb GC tables (~1.5 MB each) driving the per-1 % GC-bucket median-ratio correction. Override with `--gc`, disable with `--no-gc`.
 
-molamola is bundled-only by design — no auto-download, no online lookups. The bundled-data total is ~30 MB. All bundled refs are reproducibly regeneratable from public sources by running `scripts/derive_canonical_exons.py`, `scripts/derive_clinvar_for_molamola.py`, and `scripts/derive_karyotype_refs.py`.
+molamola is bundled-only by design — no auto-download, no online lookups. The bundled-data total is ~15 MB. All bundled refs are reproducibly regeneratable from public sources by running `scripts/derive_karyotype_refs.py`.
 
 ## Circos plot (SV mode)
 
-Outer ring: cytoband ideogram (default pyCirclize colours). Inner ribbons: each PASS BND, line-thickness scaled by `SUPPORT`, colour by VAF class (three discrete bands: mosaic 0-33 %, het 33-66 %, hom 66-100 %; the class colours are chosen under simulated colour-vision deficiency and stay distinct under protanopia, deuteranopia and tritanopia, with lightness increasing across the classes so the ordering survives even total loss of hue discrimination). Noise-flagged BNDs render grey/dashed at low alpha so the eye goes to the candidate signal. With `--plotvaf`, each drawn arc also carries its VAF as a percentage on the rim.
+Outer ring: cytoband ideogram (molamola's greyscale ISCN ramp, with the centromere in red — black is not separable from `gpos100` on a ring five radial units thick). Beneath it, **four SV density rings**, outermost first: INS = blue, DEL = red, DUP = green, INV = purple. The rings are deliberately **not** equal width: INS and DEL are drawn thin and capped below full alpha, DUP and INV get most of the radius. Per-1 Mb-bin INS and DEL density is ~85 % identical between two unrelated people (measured on the GIAB trio, holding everything but relatedness constant), so those tracks describe the species more than the sample and are drawn as background texture rather than as the figure's heaviest ink. These carry the same 1 Mb-binned signal as the linear map's density strips, in the same order and with the same per-type alpha normalisation (see below), so the circos no longer depends on the linear map for positional SVs. Only occupied bins are drawn — an empty ring is bare paper, not a tinted band. Type is encoded by *radius* first and colour second: the four-colour palette is not separable under protanopia or deuteranopia on its own, and giving each type its own ring keeps colour redundant rather than load-bearing. Innermost, the ribbons: each PASS BND, line-thickness scaled by `SUPPORT`, colour by VAF class (three discrete bands: mosaic 0-33 %, het 33-66 %, hom 66-100 %; the class colours are chosen under simulated colour-vision deficiency and stay distinct under protanopia, deuteranopia and tritanopia, with lightness increasing across the classes so the ordering survives even total loss of hue discrimination). Noise-flagged BNDs render grey/dashed at low alpha so the eye goes to the candidate signal. With `--plotvaf`, each drawn arc also carries its VAF as a percentage on the rim. A single legend sits to the right of the disc, keying the density rings with per-type event counts and per-bin peaks; the VAF colorbar beneath it covers the arc colouring. The cytoband greyscale and the grey/dashed noise-arc style are keyed on the linear map's legends instead — the two figures sit back to back in one report, so repeating them cost disc space without adding anything.
 
 ## Genome SV map (SV mode)
 
 One row per chromosome, top-down chr1 → chrY:
 
-- **Chromosome bar** (cytoband ideogram, greyscale: white → very-dark-grey, centromere = black).
-- **Four density strips** above the bar, one per non-BND SV type (INS = blue, DEL = red, DUP = green, INV = purple). Each strip is 1 Mb-binned; alpha encodes count (sqrt-scaled, single-event bins still visible).
+- **Chromosome bar** (cytoband ideogram, greyscale: white → very-dark-grey, centromere = black; the circos uses the same greys but a red centromere).
+- **Four density strips** above the bar, one per non-BND SV type (INS = blue, DEL = red, DUP = green, INV = purple). Each strip is 1 Mb-binned; alpha encodes count, sqrt-scaled and saturating at the 99th-percentile occupied bin rather than at the peak. Anchoring on the peak looked principled and was not — SV density is heavily skewed, so on a normal genome the peak bin is a far outlier from the typical one (INS: median 3 events per bin, peak 67), which pushed almost every bin into a 0.15-wide alpha band and made the strip a near-uniform wash. The ~1 % of bins above the anchor clip to full alpha. Single-event bins remain visible via a 0.20 alpha floor.
 - **BND arcs** above the strips, with apex height proportional to row gap and span. Same VAF / SUPPORT encoding as the circos ribbons.
-
-## Phased-haplotype panel (compound-het mode)
-
-One panel per plotted gene. Top-down:
-
-- **Title** — gene symbol baked into the PNG (top-left, bold) so saved images are self-describing.
-- **Canonical-transcript exon track** — IGV-style blue rectangles connected by a thin grey line; coordinates from the bundled MANE Select TSV.
-- **Mint phase block** — one rectangle per WhatsHap PS group, spanning both haplotypes; off-edge arrows when the block stretches past the gene window.
-- **H1 / H2 hap lines** — grey horizontal rules; H1 above H2.
-- **Missense lollipops** — one filled circle per phased het missense canonical-transcript variant, hanging downward from its hap line. Colour by ClinVar bucket (P/LP `#c0143c`, VUS `#f4a013`, conflicting `#d9c200`, benign `#5fa860`, no-ClinVar grey).
-- **Synonymous-variant ticks** — `x` markers on the hap line for canonical-transcript variants that aren't missense, included as context.
-- **Chip row above the figure** — missense / total / blocks / trans / cis stats.
-- **Legend** — at the bottom; ClinVar buckets + the synonymous tick.
 
 ## Karyotype coverage figure (karyotype mode)
 
@@ -64,7 +48,6 @@ The per-chromosome 3 × 8 A4-portrait grid that briefly shipped in v0.3 developm
 A single self-contained HTML file (no server, no external CSS/JS, opens offline). Figures are embedded as base64 PNG data URIs. A collapsible run-metadata block at the bottom shows mode-specific provenance:
 
 - **SV mode**: caller, filter mode, baseline coverage, cov-anomaly threshold, BND noise breakdown.
-- **Compound-het mode**: ClinVar source + release date, canonical-exons source, VCF parse refusal counts, selection rule, plotted-vs-scanned gene counts.
 - **Karyotype mode**: mosdepth source, reference, inferred genomic sex, mosdepth bin + scatter bin + smooth window, mask / GC source labels, BAF source + het-site count (when `--vcf` given), and the AS-suspected flag.
 
 Designed as a portable review surface — emailable, archivable, no install needed for the reader.

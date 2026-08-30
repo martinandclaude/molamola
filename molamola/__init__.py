@@ -1,39 +1,44 @@
 #!/usr/bin/env python3
 """molamola — plot Oxford Nanopore variation as self-contained HTML reports.
 
-A single VCF in, one self-contained HTML out. molamola inspects the
-VCF header and picks one of two plot types:
+One input in, one self-contained HTML out. molamola is a cytogenetics
+visualiser for long-read data and ships two report types:
 
 - **SV / cytogenetics report** — a circos plot plus a linear cytoband
-  ideogram with per-type density tracks (INS / DEL / DUP / INV) and
-  BND arcs. Selected when the VCF carries ``##INFO=<ID=SVTYPE,...>``
-  (Sniffles2 / cuteSV / SVIM / pbsv / NanoVar). Supports hg38 and
-  T2T-CHM13v2.0 via bundled cytobands.
+  ideogram, both carrying per-type SV density tracks (INS / DEL / DUP /
+  INV) and BND arcs. Selected when the VCF carries
+  ``##INFO=<ID=SVTYPE,...>`` (Sniffles2 / cuteSV / SVIM / pbsv /
+  NanoVar). Supports hg38 and T2T-CHM13v2.0 via bundled cytobands.
 
-- **Compound-het panels** — one per-gene phased-haplotype panel per
-  candidate gene: canonical-transcript exon track, H1 / H2 hap
-  lines, mint phase blocks, ClinVar-coloured missense lollipops and
-  synonymous-variant ticks. Selected when the VCF carries
-  ``##INFO=<ID=CSQ,...>`` AND ``##FORMAT=<ID=PS,...>`` (a phased
-  small-variant VCF with VEP CSQ annotation). hg38-only.
+- **Karyotype coverage report** — a genome-wide log2 relative-depth
+  panel from mosdepth output, with a BAF panel beneath it when a
+  small-variant VCF is supplied, haplotype-resolved when that VCF
+  happens to be phased. Selected by passing ``--mosdepth PATH``.
 
-Both modes embed figures as base64 PNG data URIs; no separate image
-files are written. The report lands next to the input VCF by default
-(or in ``--out DIR`` if specified).
+VCF inputs are dispatched from the header; the karyotype report is
+dispatched from the flag. Either ``--vcf`` or ``--mosdepth`` is
+required, and ``--out DIR`` always is.
+
+Both reports embed figures as base64 PNG data URIs, so the HTML opens
+offline with no separate image files. ``--png`` additionally writes
+each figure as a standalone PNG for pipeline embedding.
 
 Bundled references ship in ``molamola/data/``: cytobands for both
-SV-mode references, MANE Select v1.x canonical-exon coordinates for
-compound-het, and a reduced ClinVar TSV (chrom + pos + ref + alt +
-significance bucket; xz-compressed). No auto-download, no online
-lookups — molamola is self-contained, offline-friendly.
+supported assemblies, plus karyotype-mode exclusion masks and 10 kb GC
+tables. No auto-download, no online lookups — molamola is
+self-contained and offline-friendly.
 
-VCFs that don't match either shape are refused with a clear error
-rather than silently producing a default plot.
+Compound-het mode (per-gene phased-haplotype panels for recessive-
+disease workup) was removed after v0.5.1 along with its bundled ClinVar
+and MANE references; install ``molamola==0.5.1`` if you need it.
+
+Inputs that don't match a supported shape are refused with a clear
+error rather than silently producing a default plot.
 """
 
 from __future__ import annotations
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 import argparse
 import base64
@@ -50,7 +55,6 @@ from pathlib import Path
 import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
 from matplotlib.colors import to_rgb
@@ -95,6 +99,23 @@ CYTOBAND_COLORS: dict[str, str] = {
     "acen":    "#000000",
     "gvar":    "#B5B5B5",
     "stalk":   "#7A7A7A",
+}
+
+#: Cytoband palette for the circos ring. molamola's greyscale ISCN ramp
+#: with one carve-out: the centromere is red rather than black.
+#:
+#: The circos was silently taking pyCirclize's own colormap until now,
+#: so the two figures in a single report disagreed on the whole grey
+#: ramp - gpos50 was #C8C8C8 on one and #9C9C9C on the other. Passing
+#: this explicitly settles that.
+#:
+#: acen keeps a red because the ring is only 5 radial units thick and
+#: black acen is not separable from gpos100 at that size, which costs
+#: the reader the one landmark that orients a circle with no axis. The
+#: linear map has room to render acen black and does.
+CIRCOS_CYTOBAND_COLORS: dict[str, str] = {
+    **CYTOBAND_COLORS,
+    "acen": "#D92F27",
 }
 
 SV_TYPES: tuple[str, ...] = ("INS", "DEL", "DUP", "INV")
@@ -197,6 +218,94 @@ VAF_NORM = mcolors.BoundaryNorm(VAF_CLASS_EDGES, len(VAF_CLASS_COLORS))
 
 NOISE_COLOR: str = "#888888"
 
+#: Radial span of the SV density ring stack on the circos, just inside
+#: the cytoband ring (95-100). Four rings share this band, one per SV
+#: type, so the circos carries the same INS / DEL / DUP / INV signal as
+#: the linear genome map instead of depending on it.
+#:
+#: Type is encoded by *radius* first and colour second, deliberately.
+#: :data:`SV_TYPE_COLOR` is safe on the linear map only because each
+#: type owns a strip row there; measured under simulated colour-vision
+#: deficiency the palette collapses on its own (INS/INV dE 4.0 protan,
+#: DEL/DUP dE 5.9 deutan). Giving each type its own ring keeps colour
+#: redundant rather than load-bearing, so the locked palette stays put.
+#: The gap up to the cytoband ring is not spare space: the position
+#: tick labels are drawn inward from r=95, and a ring stack that
+#: reaches 94 puts INS density straight under the "0 / 100 / 200"
+#: Mb labels.
+CIRCOS_SV_RING_R: tuple[float, float] = (72.0, 90.0)
+
+#: Ring order, outermost first. INS sits closest to the cytoband ring
+#: because on the linear map INS is the strip closest to the chromosome
+#: bar; keeping the order means a reader who has learned one figure can
+#: read the other without relearning the stack.
+CIRCOS_SV_RING_ORDER: tuple[str, ...] = ("INS", "DEL", "DUP", "INV")
+
+#: Share of the ring stack each type gets, before gaps. Not equal, and
+#: the reason is measured rather than aesthetic: the INS and DEL per-bin
+#: landscape is ~85 % identical between two unrelated people, so those
+#: two tracks are close to a picture of the species rather than of the
+#: sample. Drawn at equal width they were the two thickest, densest
+#: bands on the figure - most of the ink going to the least
+#: sample-specific content. They are now background texture, and the
+#: sparse types get the radius.
+#:
+#: Evidence, from the GIAB trio (lab, prep, pipeline, caller, coverage
+#: and population all held constant, only relatedness varying): two
+#: unrelated founders already share INS R2 89.1 % / DEL 84.3 %, and
+#: extrapolating the IBD 0 -> 0.5 slope to identical genomes adds only
+#: 7 pp / 10 pp. See the handoff for the full write-up, including what
+#: this does NOT establish.
+CIRCOS_SV_RING_WEIGHT: dict[str, float] = {
+    "INS": 0.60, "DEL": 0.60, "DUP": 1.40, "INV": 1.40,
+}
+
+#: Percentile of the non-empty bin counts that saturates the density
+#: alpha ramp. Anchoring on the true peak looked principled and was
+#: not: SV density is heavily skewed, so on a normal genome the peak
+#: bin is a far outlier from the typical one (INS on MH001: median 3
+#: events, peak 67). Every ordinary bin then landed within 0.15 alpha
+#: of every other and the track encoded almost nothing. Anchoring on
+#: p99 nearly doubles the usable range; the ~1 % of bins above it clip,
+#: which is the correct trade for a hotspot that is already obvious.
+SV_DENSITY_ANCHOR_PCT: float = 99.0
+
+#: Alpha given to the sparsest non-empty bin. Its job is to keep a
+#: single-event bin visible, but every point of floor is a point taken
+#: off the range available to real variation. 0.20 leaves the faintest
+#: bin at 0.34 as drawn - plainly visible on PAPER_BG - while giving
+#: the p10-p90 spread 0.27 against 0.15 under the old 0.40 floor.
+SV_DENSITY_ALPHA_FLOOR: float = 0.20
+
+#: Darkest alpha each type is allowed to reach. Width alone does not
+#: fix the priority inversion: INS and DEL occupy 86-94 % of all bins,
+#: so at full alpha they render as two solid bands however thin they
+#: are, and a lone DUP mark has to compete with them. Capping the two
+#: shared-landscape types keeps them legible as texture while leaving
+#: the top of the scale to the types whose marks actually distinguish
+#: one sample from another.
+SV_DENSITY_ALPHA_CEILING: dict[str, float] = {
+    "INS": 0.62, "DEL": 0.62, "DUP": 1.0, "INV": 1.0,
+}
+
+#: Gap between adjacent rings, in the same radial units. Small enough
+#: that the stack reads as one band, large enough that a saturated bin
+#: in one ring does not bleed into its neighbour.
+CIRCOS_SV_RING_GAP: float = 0.6
+
+#: How much wider than tall the circos figure is drawn. The disk keeps
+#: the leftmost ``1 / CIRCOS_FIG_WIDEN`` of the width - i.e. it stays
+#: square - and the remainder is the legend and colorbar column.
+CIRCOS_FIG_WIDEN: float = 1.30
+
+#: Blank margin left around the circos disk, as a fraction of figure
+#: height. Not cosmetic: the disk axes only spans r=105, while sector
+#: names sit at r=108 and at r=116 under ``--plotvaf``, so a disk drawn
+#: flush to the figure edge clips its own chromosome labels. 0.065
+#: clears r=116 with room to spare, and ``bbox_inches="tight"`` crops
+#: back whatever the labels do not use.
+CIRCOS_DISK_MARGIN: float = 0.065
+
 #: Acrocentric chromosomes. Their short arms (chr13/14/15/21/22 p) are
 #: highly repetitive in hg38 and a common source of long-read
 #: mismapping that produces phantom BND calls.
@@ -286,80 +395,6 @@ KARY_FIG_H_GENOME_BAF: float                   = 8.6
 KARY_FIG_H_GENOME_ONLY: float                  = 6.4
 KARY_YLABEL_X: float                           = -0.030
 KARY_HEIGHT_RATIOS_CN_BAF: tuple[float, float] = (2.4, 1.0)
-
-
-# ---------------------------------------------------------------------------
-# Compound-het constants (locked 2026-05-02; do not relitigate)
-# ---------------------------------------------------------------------------
-# Visual spec ported verbatim from the laptop-only prototype at
-# /Users/martin/Documents/compound-het-plotter/plot_gene.py (draw_panel,
-# lines 266-415). Three styling variants were tried and these were
-# locked. P/LP are merged to a single colour per the v0.3 handoff.
-
-#: Lollipop fill colours by canonicalised ClinVar significance. Every
-#: missense canonical-transcript variant gets one of these. Pathogenic
-#: and Likely_pathogenic share ``"p_or_lp"`` so the dot-pair-in-trans
-#: read of "two red dots on opposite haps" works whether ClinVar calls
-#: them P or LP. Variants with no ClinVar match get the default grey.
-CLNSIG_COLOR: dict[str, str] = {
-    "p_or_lp":     "#c0143c",
-    "vus":         "#f4a013",
-    "conflicting": "#d9c200",
-    "benign":      "#5fa860",
-}
-DEFAULT_CLNSIG_COLOR: str = "#888888"
-
-#: Phase-block rectangle aesthetic. Mint fill + dark-green border,
-#: linewidth 1.2. Each rectangle spans one WhatsHap PS group across
-#: both haplotypes, with off-edge arrows when the block stretches past
-#: the gene window.
-BLOCK_FILL: str = "#e2f0e3"
-BLOCK_EDGE: str = "#3f6e44"
-BLOCK_EDGE_LW: float = 1.2
-
-#: Non-missense markers: ``x`` on the hap line, dark grey, edge
-#: width 1.4. Used for synonymous / intronic / 5'/3' UTR variants
-#: that landed in the same phase block as a missense lollipop. The
-#: ``x`` glyph (vs the original tick ``|``) keeps these visually
-#: distinct from the dark-grey rectangles of the exon track at the
-#: top of the panel.
-NON_MISSENSE_COLOR: str = "#222222"
-NON_MISSENSE_MARKER: str = "x"
-NON_MISSENSE_SIZE: float = 7.5
-NON_MISSENSE_EDGE_WIDTH: float = 1.4
-
-#: Missense lollipop dimensions. Stem extends from the hap line at
-#: ``HAP_Y[hap-1]`` *down* to ``LOLLIPOP_TIP_Y[hap-1]``; the filled
-#: circle sits at the tip with a thin black edge. Both H1 and H2
-#: lollipops point downward so the visual reading is consistent
-#: ("dots below their hap"), with H2 nudged up so the four bands
-#: (exon track, H1, H1 dots, H2, H2 dots) are evenly spaced.
-LOLLIPOP_MS: float = 8.0
-LOLLIPOP_EDGE_LW: float = 0.4
-HAP_Y: tuple[float, float] = (0.85, -0.4)            # H1, H2
-LOLLIPOP_TIP_Y: tuple[float, float] = (0.25, -1.0)   # H1, H2
-
-#: Exon-track aesthetic. Thin grey connector + IGV-style blue solid
-#: rectangles per exon, drawn at the top of each gene panel. The
-#: blue (vs the previous dark grey) reads as "gene track" in the
-#: same visual register cytogeneticists already see in IGV.
-EXON_Y: float = 1.75
-EXON_H: float = 0.14
-EXON_CONNECTOR_COLOR: str = "#888888"
-EXON_FILL: str = "#1E5BA8"
-
-#: Output PNG width cap. Anthropic's many-image upload tops out around
-#: 2000 px; cap at 1800 px to leave a margin. ``target_dpi`` is
-#: computed as ``min(150, MAX_PX_WIDTH / fig.get_figwidth())`` at
-#: render time so wider figures step down dpi rather than producing
-#: an oversize PNG.
-MAX_PX_WIDTH: int = 1800
-
-#: Consequence terms treated as missense. The renderer only draws
-#: lollipops for variants whose VEP Consequence is in this set AND
-#: whose CSQ entry is the canonical transcript. Everything else
-#: renders as a non-missense tick.
-MISSENSE_CONSEQUENCES: frozenset[str] = frozenset({"missense_variant"})
 
 
 # ---------------------------------------------------------------------------
@@ -492,156 +527,7 @@ class SV:
         return max(vals) if vals else 0.0
 
 
-@dataclass(frozen=True)
-class Gene:
-    """A canonical-transcript gene record for the compound-het mode.
 
-    Loaded from the bundled per-build TSV (``data/canonical_exons.<ref>.tsv.gz``).
-    One row per gene symbol; the canonical transcript is whichever the
-    bundled table picks (MANE Select for hg38, NCBI "best refseq" for
-    T2T). Coordinates are 0-based half-open BED-style.
-
-    Attributes
-    ----------
-    symbol : str
-        Gene symbol (e.g. ``"NEB"``, ``"APOB"``). Used as the primary
-        key throughout compound-het mode.
-    chrom : str
-        UCSC-style chromosome name (``"chr1"`` ... ``"chr22"``,
-        ``"chrX"``, ``"chrY"``). Already normalised on load.
-    start, end : int
-        Gene-body span (0-based half-open). Used as the panel x-limits.
-    strand : str
-        ``"+"`` or ``"-"``. Displayed in the panel title.
-    transcript_id : str
-        Canonical-transcript ID (e.g. ``"NM_004543.4"`` or
-        ``"ENST00000397345.8"``); shown in run-metadata.
-    canonical_exons : tuple[tuple[int, int], ...]
-        Tuple of ``(start, end)`` exon spans, sorted by start. Empty
-        tuple is allowed (gene panels still render with hap lines and
-        any phased hets in range, just without an exon track).
-    """
-    symbol: str
-    chrom: str
-    start: int
-    end: int
-    strand: str
-    transcript_id: str
-    canonical_exons: tuple[tuple[int, int], ...] = ()
-
-
-@dataclass(frozen=True)
-class PhasedVariant:
-    """A single phased het small variant for the compound-het mode.
-
-    Produced by :func:`read_phased_vcf` (one record per kept VCF row).
-    ``clnsig`` is filled in a second pass after ClinVar lookup.
-
-    The hap convention matches the prototype's SQL: ``"1|0"`` puts the
-    ALT on hap 1 (``variant_hap=1``); ``"0|1"`` puts the ALT on hap 2
-    (``variant_hap=2``). Two variants in the same PS with the same
-    ``variant_hap`` are in cis; opposite ``variant_hap`` are in trans.
-
-    Attributes
-    ----------
-    chrom, pos, ref, alt : str, int, str, str
-        Variant coordinates and alleles. ``chrom`` is normalised to
-        UCSC style on load.
-    gt : str
-        Genotype string from FORMAT/GT, exactly as read. Always
-        ``"0|1"`` or ``"1|0"`` (other patterns are filtered upstream).
-    ps : int
-        Phase set ID from FORMAT/PS. Variants with the same ``ps``
-        and the same ``chrom`` form one phase block.
-    variant_hap : int
-        ``1`` if ``gt == "1|0"``, ``2`` if ``gt == "0|1"``.
-    consequence : str
-        VEP Consequence (canonical-transcript CSQ entry, e.g.
-        ``"missense_variant"``, ``"synonymous_variant"``).
-    is_canonical_transcript : bool
-        True if a CSQ entry with ``CANONICAL == "YES"`` was found
-        for this record. False means we fell back to the first CSQ
-        entry; the renderer treats those as non-missense ticks
-        regardless of ``consequence``.
-    hgvs_p : str | None
-        VEP HGVSp string for the canonical transcript, or ``None``.
-    hgvs_c : str | None
-        VEP HGVSc string for the canonical transcript, or ``None``.
-        Surfaced in the run-metadata of the rendered report; not
-        currently used as a lookup key.
-    gene_symbol : str | None
-        VEP SYMBOL for the canonical transcript, or ``None``.
-    feature : str | None
-        VEP Feature (transcript ID) for the canonical transcript, or
-        ``None``.
-    clnsig : str | None
-        Canonicalised ClinVar significance: one of ``"p_or_lp"``,
-        ``"vus"``, ``"conflicting"``, ``"benign"``, ``"other"``, or
-        ``None`` (no ClinVar match). Filled by ClinVar lookup in
-        :func:`compound_het_main`.
-    """
-    chrom: str
-    pos: int
-    ref: str
-    alt: str
-    gt: str
-    ps: int
-    variant_hap: int
-    consequence: str
-    is_canonical_transcript: bool
-    hgvs_p: str | None = None
-    hgvs_c: str | None = None
-    gene_symbol: str | None = None
-    feature: str | None = None
-    clnsig: str | None = None
-
-    def with_clnsig(self, clnsig: str | None) -> "PhasedVariant":
-        """Return a copy of this variant with ``clnsig`` replaced.
-
-        ``PhasedVariant`` is frozen for hashability (used as dict
-        keys in pair-classification); annotation runs as a second
-        pass that rebuilds the list rather than mutating in place.
-        """
-        return PhasedVariant(
-            chrom=self.chrom, pos=self.pos, ref=self.ref, alt=self.alt,
-            gt=self.gt, ps=self.ps, variant_hap=self.variant_hap,
-            consequence=self.consequence,
-            is_canonical_transcript=self.is_canonical_transcript,
-            hgvs_p=self.hgvs_p, hgvs_c=self.hgvs_c,
-            gene_symbol=self.gene_symbol, feature=self.feature,
-            clnsig=clnsig,
-        )
-
-
-@dataclass(frozen=True)
-class PhaseBlock:
-    """One WhatsHap phase set (PS) within one gene window.
-
-    Computed from the variants assigned to a gene: group by ``ps``,
-    take ``min(pos)`` and ``max(pos)`` as the rendered extent. The
-    renderer optionally extends ``start``/``end`` to the WhatsHap-
-    reported full block extent (which may stretch past the gene
-    window), with off-edge arrows when so.
-
-    Attributes
-    ----------
-    ps : int
-        Phase set ID.
-    start, end : int
-        Rendered extent (0-based half-open). Currently the min/max
-        position of variants in this block within the gene window.
-    n_phased : int
-        Number of phased het variants in the block (across both haps).
-    """
-    ps: int
-    start: int
-    end: int
-    n_phased: int
-
-
-# ---------------------------------------------------------------------------
-# VCF parsing
-# ---------------------------------------------------------------------------
 
 _BND_ALT_RE = re.compile(
     r"^(?P<pre>[A-Za-z.*]*)"
@@ -1279,16 +1165,19 @@ def detect_vcf_mode(vcf_path: Path) -> str:
 
     Discriminators:
 
+    - ``##INFO=<ID=SVTYPE,...>`` → ``"sv"`` (long-read SV VCF;
+      Sniffles / cuteSV / SVIM / pbsv / NanoVar all emit SVTYPE).
     - ``##INFO=<ID=CSQ,...>`` AND ``##FORMAT=<ID=PS,...>`` →
-      ``"compound-het"`` (phased small-variant VCF with VEP CSQ
-      annotation; the only shape that compound-het mode can plot).
-    - ``##INFO=<ID=SVTYPE,...>`` (and not the CSQ+PS pair above) →
-      ``"sv"`` (long-read SV VCF; Sniffles / cuteSV / SVIM / pbsv /
-      NanoVar all emit SVTYPE).
+      ``"compound-het-removed"``.
 
-    A VCF with both shapes (rare — would need to be VEP-annotated
-    SVs that are also phased) prefers ``"compound-het"`` because the
-    CSQ + PS pair is more specific.
+    The CSQ + PS shape is still detected even though nothing plots it
+    any more. Compound-het mode was removed after v0.5.1, and a phased
+    VEP-annotated VCF carries no ``SVTYPE``, so without this branch it
+    would fall through to the generic "unsupported shape" refusal and
+    a returning user would have no way to tell a removed capability
+    from a malformed file. SVTYPE is checked first: a VEP-annotated,
+    phased SV VCF is rare but is plottable, and plotting it beats
+    refusing it.
 
     Raises ``ValueError`` if neither shape is present so molamola
     refuses rather than render a misleading default plot.
@@ -1306,14 +1195,14 @@ def detect_vcf_mode(vcf_path: Path) -> str:
                 has_csq = True
             elif line.startswith("##FORMAT=<ID=PS,"):
                 has_ps = True
-    if has_csq and has_ps:
-        return "compound-het"
     if has_svtype:
         return "sv"
+    if has_csq and has_ps:
+        return "compound-het-removed"
     raise ValueError(
-        f"VCF at {vcf_path} doesn't match either supported shape: "
-        f"SV mode needs ##INFO=<ID=SVTYPE,...>; compound-het mode "
-        f"needs ##INFO=<ID=CSQ,...> AND ##FORMAT=<ID=PS,...>."
+        f"VCF at {vcf_path} doesn't match a supported shape: SV mode "
+        f"needs ##INFO=<ID=SVTYPE,...>, and karyotype mode is selected "
+        f"with --mosdepth rather than from the VCF header."
     )
 
 
@@ -1403,608 +1292,36 @@ def deduplicate_reciprocal(bnds: list[BND]) -> list[BND]:
     return list(seen.values())
 
 
-# ---------------------------------------------------------------------------
-# Compound-het loaders & selection
-# ---------------------------------------------------------------------------
 
-# Match the ``Format: A|B|C|...`` substring inside a VEP CSQ INFO line.
-# VEP emits the format list inside the Description="..." string, so the
-# field list ends at the closing double-quote.
-_CSQ_FORMAT_RE = re.compile(r"Format:\s*([^\"]+?)\s*\"?\s*>")
 
 
-def parse_csq_format(header_line: str) -> list[str] | None:
-    """Extract the VEP CSQ field order from a VCF header line.
 
-    Returns the field list (e.g. ``["Allele", "Consequence", "SYMBOL",
-    ...]``) when ``header_line`` is the ``##INFO=<ID=CSQ,...>`` line,
-    or ``None`` when the line is not a CSQ definition.
 
-    Resilient to VEP plugin reordering: callers should look up fields
-    by name, not by index, since plugin order varies between runs.
-    """
-    if not header_line.startswith("##INFO=<ID=CSQ,"):
-        return None
-    m = _CSQ_FORMAT_RE.search(header_line)
-    if m is None:
-        return None
-    return [f.strip() for f in m.group(1).split("|") if f.strip()]
 
 
-def _parse_csq_entry(entry: str, csq_fields: list[str]) -> dict[str, str]:
-    """Split one ``|``-delimited CSQ entry into a ``{field: value}`` dict.
 
-    Trailing fields beyond ``len(csq_fields)`` are dropped; missing
-    trailing fields stay as empty strings. Field values are kept as
-    raw strings (no casting).
-    """
-    parts = entry.split("|")
-    out: dict[str, str] = {}
-    for i, name in enumerate(csq_fields):
-        out[name] = parts[i] if i < len(parts) else ""
-    return out
 
 
-def _pick_canonical_csq(
-    csq_value: str,
-    csq_fields: list[str],
-) -> tuple[dict[str, str], bool]:
-    """Pick the canonical-transcript CSQ entry from a multi-entry CSQ.
 
-    VEP packs all transcript annotations for one variant into a single
-    ``CSQ=A|...,B|...,C|...`` INFO value. We walk the entries and pick
-    the first one with ``CANONICAL == "YES"``. If none has it, we fall
-    back to the first entry and flag ``is_canonical=False`` so the
-    renderer can treat it as a non-canonical record.
 
-    Returns ``(entry_dict, is_canonical)``.
-    """
-    entries = csq_value.split(",")
-    parsed = [_parse_csq_entry(e, csq_fields) for e in entries]
-    for p in parsed:
-        if p.get("CANONICAL", "") == "YES":
-            return p, True
-    if parsed:
-        return parsed[0], False
-    return {}, False
 
 
-def is_missense_consequence(consequence: str) -> bool:
-    """Return True iff ``consequence`` includes ``missense_variant``.
 
-    VEP joins multi-consequence annotations with ``&`` (e.g.
-    ``"missense_variant&splice_region_variant"``); we treat any string
-    that contains ``missense_variant`` as a token as missense.
-    """
-    return "missense_variant" in consequence.split("&")
 
 
-def read_phased_vcf(
-    path: Path,
-) -> tuple[list[PhasedVariant], dict[str, object]]:
-    """Read a phased small-variant VCF with VEP CSQ annotation.
 
-    Behaviour:
 
-    - Hard refusal (raises ``ValueError``) when the header lacks
-      ``##INFO=<ID=CSQ,...>`` (no annotation we can colour-code) or
-      ``##FORMAT=<ID=PS,...>`` (no phase info we can plot).
-    - Per-record skips (counted, never raised): unphased GT
-      (no ``|``), homozygous (``0|0`` / ``1|1``), multi-allelic
-      ALT (``,`` in ALT column).
-    - Canonical transcript pick: prefer the CSQ entry with
-      ``CANONICAL == "YES"``; fall back to the first entry with
-      ``is_canonical_transcript=False`` so the renderer can treat
-      it as a non-canonical record.
 
-    Parameters
-    ----------
-    path : Path
-        Phased VCF (``.vcf`` or ``.vcf.gz``).
 
-    Returns
-    -------
-    variants : list[PhasedVariant]
-        Phased het records, autosome filter NOT applied (caller
-        decides; explicit ``--gene FOO`` on chrX must still render).
-    summary : dict
-        Run-metadata for the HTML report. Keys: ``csq_fields``,
-        ``has_ps_in_header``, ``unphased``, ``non_het``,
-        ``multi_allelic``, ``no_canonical_csq``, ``kept``.
 
-    Raises
-    ------
-    ValueError
-        On file-level CSQ or PS absence.
-    """
-    csq_fields: list[str] | None = None
-    has_ps_in_header = False
-    refusal: dict[str, int] = {
-        "unphased": 0,
-        "non_het": 0,
-        "multi_allelic": 0,
-        "no_canonical_csq": 0,
-        "kept": 0,
-    }
-    variants: list[PhasedVariant] = []
 
-    with open_text(path) as fh:
-        for raw in fh:
-            line = raw.rstrip("\n").rstrip("\r")
-            if not line:
-                continue
-            if line.startswith("##"):
-                if csq_fields is None:
-                    parsed = parse_csq_format(line)
-                    if parsed is not None:
-                        csq_fields = parsed
-                if line.startswith("##FORMAT=<ID=PS,"):
-                    has_ps_in_header = True
-                continue
-            if line.startswith("#CHROM"):
-                if csq_fields is None:
-                    raise ValueError(
-                        "VCF has no CSQ INFO field; molamola compound-het "
-                        "requires VEP-annotated input"
-                    )
-                if not has_ps_in_header:
-                    raise ValueError(
-                        "VCF is unphased (no ##FORMAT=<ID=PS,...> in "
-                        "header); supply a WhatsHap/HiPhase-phased VCF"
-                    )
-                continue
-            if line.startswith("#"):
-                continue
 
-            # Data row.
-            fields = line.split("\t")
-            if len(fields) < 10:
-                continue
-            chrom_raw, pos, _vid, ref, alt, _qual, _flt, info_str, fmt, sample = fields[:10]
 
-            if "," in alt:
-                refusal["multi_allelic"] += 1
-                continue
 
-            gt = _format_field(fmt, sample, "GT")
-            if gt is None or "|" not in gt:
-                refusal["unphased"] += 1
-                continue
-            if gt not in ("0|1", "1|0"):
-                refusal["non_het"] += 1
-                continue
-            ps_str = _format_field(fmt, sample, "PS")
-            if ps_str is None or ps_str in (".", ""):
-                refusal["unphased"] += 1
-                continue
-            try:
-                ps = int(ps_str)
-            except ValueError:
-                refusal["unphased"] += 1
-                continue
-            try:
-                pos_i = int(pos)
-            except ValueError:
-                continue
 
-            info = parse_info(info_str)
-            csq_raw = info.get("CSQ")
-            if not isinstance(csq_raw, str):
-                refusal["no_canonical_csq"] += 1
-                continue
-            csq_entry, is_canonical = _pick_canonical_csq(csq_raw, csq_fields)
-            if not csq_entry:
-                refusal["no_canonical_csq"] += 1
-                continue
 
-            variant_hap = 1 if gt == "1|0" else 2
-            v = PhasedVariant(
-                chrom=_normalize_chrom(chrom_raw),
-                pos=pos_i,
-                ref=ref,
-                alt=alt,
-                gt=gt,
-                ps=ps,
-                variant_hap=variant_hap,
-                consequence=csq_entry.get("Consequence", ""),
-                is_canonical_transcript=is_canonical,
-                hgvs_p=csq_entry.get("HGVSp") or None,
-                hgvs_c=csq_entry.get("HGVSc") or None,
-                gene_symbol=csq_entry.get("SYMBOL") or None,
-                feature=csq_entry.get("Feature") or None,
-                clnsig=None,
-            )
-            variants.append(v)
-            refusal["kept"] += 1
 
-    if csq_fields is None:
-        raise ValueError(
-            "VCF has no CSQ INFO field; molamola compound-het requires "
-            "VEP-annotated input"
-        )
-    if not has_ps_in_header:
-        raise ValueError(
-            "VCF is unphased (no ##FORMAT=<ID=PS,...> in header); supply a "
-            "WhatsHap/HiPhase-phased VCF"
-        )
 
-    summary: dict[str, object] = dict(refusal)
-    summary["csq_fields"] = csq_fields
-    summary["has_ps_in_header"] = has_ps_in_header
-    return variants, summary
-
-
-def find_canonical_exon_file() -> Path:
-    """Return the bundled hg38 canonical-exon TSV path.
-
-    Raises ``FileNotFoundError`` when the bundled file is missing —
-    molamola does not auto-download.
-    """
-    here = Path(__file__).resolve().parent
-    p = here / "data" / "canonical_exons.hg38.tsv.gz"
-    if not p.exists():
-        raise FileNotFoundError(
-            f"bundled canonical-exon table not found at {p}; molamola "
-            "does not auto-download. Provide one via --canonical-exons."
-        )
-    return p
-
-
-def load_canonical_exons(path: Path) -> dict[str, Gene]:
-    """Load a canonical-exon TSV into a ``{symbol: Gene}`` dict.
-
-    Schema (gzipped TSV with header)::
-
-        gene_symbol  chrom  start  end  strand  transcript_id
-                                         exon_starts  exon_ends
-
-    ``exon_starts`` and ``exon_ends`` are comma-separated 0-based
-    half-open coordinates. Empty strings produce an empty exon tuple.
-    Duplicate symbols keep the first occurrence; the loader does not
-    silently merge — bundled tables are produced one row per symbol.
-    """
-    out: dict[str, Gene] = {}
-    with open_text(path) as fh:
-        header = fh.readline().rstrip("\n").rstrip("\r").split("\t")
-        idx = {name: i for i, name in enumerate(header)}
-        required = ("gene_symbol", "chrom", "start", "end", "strand",
-                    "transcript_id", "exon_starts", "exon_ends")
-        missing = [c for c in required if c not in idx]
-        if missing:
-            raise ValueError(
-                f"canonical-exon TSV at {path} missing columns: {missing}"
-            )
-        for line in fh:
-            line = line.rstrip("\n").rstrip("\r")
-            if not line:
-                continue
-            cols = line.split("\t")
-            if len(cols) < len(header):
-                continue
-            symbol = cols[idx["gene_symbol"]]
-            if symbol in out:
-                continue
-            chrom = _normalize_chrom(cols[idx["chrom"]])
-            try:
-                start = int(cols[idx["start"]])
-                end = int(cols[idx["end"]])
-            except ValueError:
-                continue
-            strand = cols[idx["strand"]]
-            transcript_id = cols[idx["transcript_id"]]
-            starts_raw = cols[idx["exon_starts"]]
-            ends_raw = cols[idx["exon_ends"]]
-            exon_starts = [int(x) for x in starts_raw.split(",") if x]
-            exon_ends = [int(x) for x in ends_raw.split(",") if x]
-            exons = tuple(zip(exon_starts, exon_ends))
-            out[symbol] = Gene(
-                symbol=symbol, chrom=chrom, start=start, end=end,
-                strand=strand, transcript_id=transcript_id,
-                canonical_exons=exons,
-            )
-    return out
-
-
-def canon_clnsig(raw: str | None) -> str | None:
-    """Canonicalise a ClinVar CLNSIG string to a colour-key bucket.
-
-    Returns one of ``"p_or_lp"``, ``"vus"``, ``"conflicting"``,
-    ``"benign"``, ``"other"``, or ``None`` when ``raw`` is empty.
-
-    P/LP merge into a single bucket so the dot-pair-in-trans read
-    of "two red dots on opposite haps" works whether ClinVar calls
-    a variant Pathogenic or Likely_pathogenic.
-    """
-    if not raw:
-        return None
-    if "Conflicting" in raw:
-        return "conflicting"
-    if "Pathogenic" in raw or "Likely_pathogenic" in raw:
-        return "p_or_lp"
-    if "Uncertain" in raw:
-        return "vus"
-    if "Benign" in raw or "Likely_benign" in raw:
-        return "benign"
-    return "other"
-
-
-def find_clinvar_file() -> Path:
-    """Return the bundled ClinVar reduced-TSV path.
-
-    The bundled file is a derived 5-column TSV (not the raw NCBI
-    VCF) — see :func:`load_clinvar_lookup` for the schema. xz-
-    compressed reduced TSV vs raw VCF is roughly 13 MB vs 191 MB.
-
-    ClinVar is hg38-coordinate; the compound-het mode supports hg38
-    only as of v0.3.1 (T2T deferred until a non-coordinate-based
-    matching path lands).
-
-    Raises ``FileNotFoundError`` when missing — bundled-only refs.
-    """
-    here = Path(__file__).resolve().parent
-    p = here / "data" / "clinvar.hg38.tsv.xz"
-    if not p.exists():
-        raise FileNotFoundError(
-            f"bundled ClinVar TSV not found at {p}; molamola does not "
-            "auto-download. Provide one via --clinvar (TSV or VCF)."
-        )
-    return p
-
-
-def _load_clinvar_lookup_tsv(
-    path: Path,
-    keys_of_interest: set[tuple[str, int, str, str]] | None,
-) -> dict[tuple[str, int, str, str], str]:
-    """Read molamola's reduced ClinVar TSV (already bucketed)."""
-    out: dict[tuple[str, int, str, str], str] = {}
-    with open_text(path) as fh:
-        header = fh.readline().rstrip("\n").rstrip("\r").split("\t")
-        idx = {n: i for i, n in enumerate(header)}
-        required = ("chrom", "pos", "ref", "alt", "bucket")
-        missing = [c for c in required if c not in idx]
-        if missing:
-            raise ValueError(
-                f"reduced ClinVar TSV at {path} missing columns: {missing}"
-            )
-        for raw in fh:
-            line = raw.rstrip("\n").rstrip("\r")
-            if not line:
-                continue
-            cols = line.split("\t")
-            if len(cols) <= idx["bucket"]:
-                continue
-            chrom = _normalize_chrom(cols[idx["chrom"]])
-            try:
-                pos = int(cols[idx["pos"]])
-            except ValueError:
-                continue
-            ref, alt = cols[idx["ref"]], cols[idx["alt"]]
-            key = (chrom, pos, ref, alt)
-            if keys_of_interest is not None and key not in keys_of_interest:
-                continue
-            bucket = cols[idx["bucket"]]
-            if bucket in CLNSIG_COLOR:
-                out[key] = bucket
-    return out
-
-
-def _load_clinvar_lookup_vcf(
-    path: Path,
-    keys_of_interest: set[tuple[str, int, str, str]] | None,
-) -> dict[tuple[str, int, str, str], str]:
-    """Read NCBI's raw ClinVar VCF, computing buckets via canon_clnsig."""
-    out: dict[tuple[str, int, str, str], str] = {}
-    with open_text(path) as fh:
-        for raw in fh:
-            line = raw.rstrip("\n").rstrip("\r")
-            if not line or line.startswith("#"):
-                continue
-            fields = line.split("\t")
-            if len(fields) < 8:
-                continue
-            chrom = _normalize_chrom(fields[0])
-            try:
-                pos = int(fields[1])
-            except ValueError:
-                continue
-            ref, alt = fields[3], fields[4]
-            if "," in alt:
-                continue
-            key = (chrom, pos, ref, alt)
-            if keys_of_interest is not None and key not in keys_of_interest:
-                continue
-            info = parse_info(fields[7])
-            raw_clnsig = info.get("CLNSIG")
-            if not isinstance(raw_clnsig, str) or not raw_clnsig:
-                continue
-            bucket = canon_clnsig(raw_clnsig)
-            if bucket in CLNSIG_COLOR:
-                out[key] = bucket
-    return out
-
-
-def load_clinvar_lookup(
-    path: Path,
-    keys_of_interest: set[tuple[str, int, str, str]] | None = None,
-) -> dict[tuple[str, int, str, str], str]:
-    """Stream a ClinVar source, return ``{(chrom, pos, ref, alt): bucket}``.
-
-    Bucket is one of ``"p_or_lp"``, ``"vus"``, ``"conflicting"``, or
-    ``"benign"`` — the colour-mappable subset (keys of
-    :data:`CLNSIG_COLOR`). Records that would canonicalise to
-    ``"other"`` or have no CLNSIG are dropped — they would render
-    in the no-ClinVar grey anyway.
-
-    Format is auto-detected from the file extension:
-
-    - ``.tsv`` / ``.tsv.gz`` / ``.tsv.xz``: molamola's reduced TSV
-      with header ``chrom\\tpos\\tref\\talt\\tbucket``. Bucket is
-      read verbatim — no re-canonicalisation. This is what
-      :func:`find_clinvar_file` returns. Produced by
-      ``scripts/derive_clinvar_for_molamola.py`` from the raw NCBI
-      VCF.
-    - ``.vcf`` / ``.vcf.gz``: NCBI's raw ClinVar VCF release. CLNSIG
-      is bucketed at load time via :func:`canon_clnsig`. Useful for
-      one-off overrides via ``--clinvar`` before the bundled TSV
-      has been re-derived against a fresh release.
-
-    When ``keys_of_interest`` is given, only matching rows are kept —
-    this keeps the dict small even on the full ClinVar release
-    (~4M sites). Without it, every mappable record is kept.
-
-    Both source formats use bare contig names internally; this
-    loader normalises to UCSC ``chrN`` so dict keys match the
-    convention used elsewhere in molamola.
-    """
-    p = str(path)
-    if (p.endswith(".tsv") or p.endswith(".tsv.gz")
-            or p.endswith(".tsv.xz")):
-        return _load_clinvar_lookup_tsv(path, keys_of_interest)
-    return _load_clinvar_lookup_vcf(path, keys_of_interest)
-
-
-def classify_pairs(
-    variants: list[PhasedVariant],
-) -> tuple[int, int]:
-    """Count trans and cis pairs of canonical-transcript missense variants.
-
-    Two variants are paired iff they are in the same phase set
-    (``ps``) and both are missense canonical-transcript variants.
-    Same ``variant_hap`` ⇒ cis; opposite ⇒ trans. Pairs are counted
-    in the unordered ``C(n, 2)`` sense (each pair contributes once).
-
-    Used to populate the panel title's ``T trans, C cis`` suffix.
-    Pure counting helper; the renderer does NOT draw arcs (the
-    locked spec intentionally omits them — opposite-hap dots in the
-    same block already read as trans).
-    """
-    pool = [
-        v for v in variants
-        if v.is_canonical_transcript and is_missense_consequence(v.consequence)
-    ]
-    n_trans = 0
-    n_cis = 0
-    for i, a in enumerate(pool):
-        for b in pool[i + 1:]:
-            if a.ps != b.ps:
-                continue
-            if a.variant_hap == b.variant_hap:
-                n_cis += 1
-            else:
-                n_trans += 1
-    return n_trans, n_cis
-
-
-#: ClinVar bucket set treated as "informative for compound-het":
-#: pathogenic / likely-pathogenic and uncertain-significance carry
-#: enough signal that an anchor in this set, paired with a non-benign
-#: partner, is worth surfacing in the auto-select sweep. The
-#: stricter "true compound-het" rule additionally requires the
-#: partner to also be in this set (strict-section in the report).
-_AUTO_SELECT_BUCKETS: frozenset[str] = frozenset({"p_or_lp", "vus"})
-
-
-def _is_strict_pair(a: "PhasedVariant", b: "PhasedVariant") -> bool:
-    """Both variants are P/LP or VUS — the "true compound-het" filter."""
-    return (a.clnsig in _AUTO_SELECT_BUCKETS
-            and b.clnsig in _AUTO_SELECT_BUCKETS)
-
-
-def _is_extended_pair(a: "PhasedVariant", b: "PhasedVariant") -> bool:
-    """At least one anchor is P/LP-or-VUS and partner is not benign.
-
-    Extended pairs are a superset of strict pairs.
-    """
-    return (
-        (a.clnsig in _AUTO_SELECT_BUCKETS and b.clnsig != "benign")
-        or (b.clnsig in _AUTO_SELECT_BUCKETS and a.clnsig != "benign")
-    )
-
-
-def find_compound_het_candidates(
-    variants: list[PhasedVariant],
-    genes: dict[str, Gene],
-    *,
-    min_pair_count: int = 1,
-) -> tuple[list[str], list[str]]:
-    """Auto-select candidate genes, split by strictness.
-
-    Returns ``(strict_genes, extended_only_genes)``: two disjoint,
-    alphabetically-sorted lists. Their union is the full
-    auto-select set; each gene appears in exactly one list.
-
-    A *trans pair* is two phased het missense canonical-transcript
-    variants in the same phase set on opposite haps. Two pair
-    classifications matter:
-
-    - **strict** — both variants have ClinVar CLNSIG in
-      :data:`_AUTO_SELECT_BUCKETS` (``p_or_lp`` or ``vus``). True
-      compound-het filter; rare in real data outside actual
-      recessive-disease cases.
-    - **extended** (a strict superset) — at least one variant is in
-      ``_AUTO_SELECT_BUCKETS`` AND the partner is not benign.
-
-    Selection:
-
-    - Gene → ``strict_genes`` iff ``>= min_pair_count`` strict pairs
-      in a single PS.
-    - Gene → ``extended_only_genes`` iff ``>= min_pair_count``
-      extended pairs in a single PS, AND the gene does not already
-      qualify as strict.
-
-    Pairs where both variants are conflicting / no-ClinVar / both
-    benign are excluded from auto-select entirely. Use ``--gene``
-    to plot those explicitly.
-
-    "In trans" pair semantics: the two variants share PS but have
-    opposite ``variant_hap``. :func:`classify_pairs` uses the same
-    definition for the panel's `T trans, C cis` summary so the
-    auto-select rule and the rendered panel agree on what "trans"
-    means.
-    """
-    by_gene: dict[str, list[PhasedVariant]] = {}
-    for v in variants:
-        if v.gene_symbol is None or v.gene_symbol not in genes:
-            continue
-        if not v.is_canonical_transcript:
-            continue
-        if not is_missense_consequence(v.consequence):
-            continue
-        gene = genes[v.gene_symbol]
-        if v.chrom != gene.chrom or not (gene.start <= v.pos <= gene.end):
-            continue
-        by_gene.setdefault(v.gene_symbol, []).append(v)
-
-    strict: list[str] = []
-    extended_only: list[str] = []
-    for symbol, vs in by_gene.items():
-        by_ps: dict[int, list[PhasedVariant]] = {}
-        for v in vs:
-            by_ps.setdefault(v.ps, []).append(v)
-        n_strict = 0
-        n_extended = 0
-        for ps_vs in by_ps.values():
-            for i, a in enumerate(ps_vs):
-                for b in ps_vs[i + 1:]:
-                    if a.variant_hap == b.variant_hap:
-                        continue
-                    if _is_strict_pair(a, b):
-                        n_strict += 1
-                        n_extended += 1
-                    elif _is_extended_pair(a, b):
-                        n_extended += 1
-        if n_strict >= min_pair_count:
-            strict.append(symbol)
-        elif n_extended >= min_pair_count:
-            extended_only.append(symbol)
-    strict.sort()
-    extended_only.sort()
-    return strict, extended_only
-
-
-# ---------------------------------------------------------------------------
-# Focus / CLI parsing helpers
-# ---------------------------------------------------------------------------
 
 def parse_focus(s: str) -> tuple[str, int]:
     """Parse a ``CHR:POS`` or ``CHR:BAND`` string for ``--focus``.
@@ -2626,8 +1943,7 @@ def _kary_detect_adaptive_sampling(
 # All styling (palette, fonts, line widths) is passed per-call. Do NOT
 # call ``plt.rcParams.update()`` from any function in this section:
 # rcParams is global module state and any leakage would silently shift
-# the SV-mode and compound-het renders that share the same Python
-# process.
+# the SV-mode renders that share the same Python process.
 
 @functools.cache
 def _kary_resolve_fonts(candidates: tuple[str, ...]) -> tuple[str, ...]:
@@ -3313,6 +2629,131 @@ def _style_vaf_colorbar(cb) -> None:
         )
 
 
+def _bin_sv_counts(
+    svs_per_chrom: dict[str, list[SV]],
+    contigs: dict[str, int],
+    bin_size: int,
+) -> tuple[dict, dict[str, float]]:
+    """Bin SV counts per chromosome × type.
+
+    Parameters
+    ----------
+    svs_per_chrom : dict[str, list[SV]]
+        SVs grouped by chromosome.
+    contigs : dict[str, int]
+        Chromosome lengths.
+    bin_size : int
+        Bin width in bp.
+
+    Returns
+    -------
+    bins_cache : dict[str, dict[str, np.ndarray]]
+        ``{chrom: {svtype: counts_array}}``.
+    type_peak : dict[str, float]
+        True max bin-count per SV type. Reported in the legends - a
+        reader asking "how dense does this get" wants the real peak,
+        not the saturation point.
+    type_anchor : dict[str, float]
+        Bin-count at which the alpha ramp saturates, the
+        :data:`SV_DENSITY_ANCHOR_PCT` percentile of the non-empty bins.
+        Genome-wide per type, never per chromosome: a per-chromosome
+        anchor would make the same count render differently on chr1 and
+        chr21, which is the opposite of what a density track is for.
+    """
+    bins_cache: dict = {c: {} for c in svs_per_chrom}
+    type_peak: dict[str, float] = {t: 1.0 for t in SV_TYPES}
+    for c, chr_svs in svs_per_chrom.items():
+        L = contigs[c]
+        n_bins = (L // bin_size) + 1
+        for t in SV_TYPES:
+            counts = np.zeros(n_bins, dtype=float)
+            for s in chr_svs:
+                if s.svtype != t:
+                    continue
+                b = s.start // bin_size
+                if 0 <= b < n_bins:
+                    counts[b] += 1
+            bins_cache[c][t] = counts
+            if counts.size and counts.max() > type_peak[t]:
+                type_peak[t] = float(counts.max())
+
+    type_anchor: dict[str, float] = {}
+    for t in SV_TYPES:
+        occupied = np.concatenate(
+            [bins_cache[c][t][bins_cache[c][t] > 0] for c in bins_cache]
+        ) if bins_cache else np.array([])
+        type_anchor[t] = (
+            float(np.percentile(occupied, SV_DENSITY_ANCHOR_PCT))
+            if occupied.size else 1.0
+        )
+    return bins_cache, type_peak, type_anchor
+
+
+def _sv_density(
+    svs: list[SV],
+    contigs: dict[str, int],
+    bin_size: int,
+) -> tuple[list[str], list[SV], dict, dict[str, float], dict[str, float]]:
+    """Bin the plottable non-BND SVs for the circos and the linear map.
+
+    Both figures show the same density signal, so both must apply the
+    same filter and the same per-type normalisation - otherwise an
+    identical bin would render at two different alphas across the two
+    panels of one report. Keeping the filter here rather than at each
+    call site is what guarantees that.
+
+    Noise-flagged and non-PASS events are dropped: the density strips
+    are meant to point the eye at candidate signal, and a repeat-collapse
+    hotspot is exactly the thing that would otherwise dominate them.
+
+    Returns ``(chroms_present, svs_filt, bins_cache, type_peak,
+    type_anchor)``.
+    """
+    chroms_present = [c for c in CHROM_ORDER if c in contigs]
+    svs_filt = [s for s in svs if s.is_pass and not s.is_noise]
+    svs_per_chrom = {
+        c: [s for s in svs_filt if s.chrom == c] for c in chroms_present
+    }
+    bins_cache, type_peak, type_anchor = _bin_sv_counts(
+        svs_per_chrom, contigs, bin_size,
+    )
+    return chroms_present, svs_filt, bins_cache, type_peak, type_anchor
+
+
+def sv_density_alpha(counts, anchor: float, svtype: str | None = None):
+    """Map per-bin SV counts to the alpha used by both SV figures.
+
+    Empty bins are fully transparent; anything non-empty starts at
+    :data:`SV_DENSITY_ALPHA_FLOOR` so a single-event bin stays visible,
+    and the remainder is sqrt-scaled to ``anchor``. Square root rather
+    than linear because SV density is heavily skewed - a linear ramp
+    puts almost every bin in the bottom tenth of the range and only the
+    hotspot reads.
+
+    ``svtype`` selects the per-type ceiling from
+    :data:`SV_DENSITY_ALPHA_CEILING`; omit it to use the full range.
+
+    ``anchor`` is the :data:`SV_DENSITY_ANCHOR_PCT` percentile of the
+    occupied bins, not their maximum. Both are "the top of the scale",
+    but the maximum is an outlier on real data and using it wasted most
+    of the ramp: with INS on MH001 (median 3 events per bin, peak 67)
+    the p10-p90 alpha spread was 0.15, so the track drew a near-uniform
+    band. Counts above the anchor clip to full alpha, which costs
+    nothing a reader needs - a hotspot that far out is already the
+    darkest thing in the track.
+    """
+    counts = np.asarray(counts, dtype=float)
+    alphas = np.zeros_like(counts)
+    mask = counts > 0
+    if mask.any():
+        floor = SV_DENSITY_ALPHA_FLOOR
+        ceiling = SV_DENSITY_ALPHA_CEILING.get(svtype, 1.0)
+        alphas[mask] = floor + (ceiling - floor) * np.sqrt(
+            counts[mask] / max(anchor, 1.0),
+        ).clip(0, 1)
+    return alphas
+
+
 def render_props(b: BND) -> tuple:
     """Return ``(color, alpha, linestyle)`` for a BND in any plot.
 
@@ -3390,8 +2831,125 @@ def _draw_vaf_labels(circos, labels: list[tuple], contigs: dict) -> int:
     return n_drawn, n_crowded
 
 
+def _circos_ring_radii() -> dict[str, tuple[float, float]]:
+    """Radial limits of each SV density ring, keyed by SV type.
+
+    The stack fills :data:`CIRCOS_SV_RING_R` in
+    :data:`CIRCOS_SV_RING_ORDER`, outermost first, separated by
+    :data:`CIRCOS_SV_RING_GAP`, with each type taking a share of the
+    remaining radius proportional to :data:`CIRCOS_SV_RING_WEIGHT`.
+    """
+    lo, hi = CIRCOS_SV_RING_R
+    n = len(CIRCOS_SV_RING_ORDER)
+    usable = (hi - lo) - CIRCOS_SV_RING_GAP * (n - 1)
+    total_w = sum(CIRCOS_SV_RING_WEIGHT[t] for t in CIRCOS_SV_RING_ORDER)
+    radii: dict[str, tuple[float, float]] = {}
+    top = hi
+    for t in CIRCOS_SV_RING_ORDER:
+        band = usable * CIRCOS_SV_RING_WEIGHT[t] / total_w
+        radii[t] = (top - band, top)
+        top -= band + CIRCOS_SV_RING_GAP
+    return radii
+
+
+def _draw_sv_density_rings(
+    circos,
+    contigs: dict[str, int],
+    bins_cache: dict,
+    type_anchor: dict[str, float],
+    bin_size: int,
+) -> int:
+    """Draw one alpha-encoded SV density ring per type inside the cytobands.
+
+    This is the linear map's density strip stack bent into a circle:
+    same bins, same per-type normalisation, same alpha ramp, same order.
+    It is what makes the circos self-contained - before this, INS / DEL /
+    DUP / INV existed only on the linear map and the circos showed
+    translocations against bare cytobands.
+
+    Only non-empty bins get ink. An earlier version tinted each whole
+    ring at a faint alpha so an empty ring still read as a ring, but on
+    a normal genome DUP and INV are two orders of magnitude rarer than
+    INS and DEL, so their rings were almost entirely baseline - and a
+    continuous pale band reads as low-level density everywhere, which is
+    the opposite of what it meant. The legend carries the ring order and
+    the per-type counts, so a bare ring is not ambiguous.
+
+    Colour does carry more weight for the two sparse rings now that they
+    sit on bare paper rather than on a tinted band. That happens to be
+    safe: DUP-vs-INV is the best separated pair in
+    :data:`SV_TYPE_COLOR`, at worst dE 53 under tritanopia, against a
+    palette-wide worst case of 4.0 for INS-vs-INV under protanopia. The
+    weak pairs are the two dense rings, which are told apart by radius
+    and by being solid.
+
+    Returns the number of non-empty bins drawn.
+    """
+    radii = _circos_ring_radii()
+    n_drawn = 0
+    for sector in circos.sectors:
+        chrom = sector.name
+        length = contigs.get(chrom, int(sector.size))
+        chrom_bins = bins_cache.get(chrom) or {}
+        for t in CIRCOS_SV_RING_ORDER:
+            track = sector.add_track(radii[t], name=f"sv_density_{t}")
+            counts = chrom_bins.get(t)
+            if counts is None or not len(counts):
+                continue
+            alphas = sv_density_alpha(counts, type_anchor[t], svtype=t)
+            for i in np.nonzero(alphas)[0]:
+                track.rect(
+                    i * bin_size, min((i + 1) * bin_size, length),
+                    fc=SV_TYPE_COLOR[t], ec="none", lw=0,
+                    alpha=float(alphas[i]),
+                )
+                n_drawn += 1
+    return n_drawn
+
+
+def _add_circos_legend(
+    fig,
+    n_svs_by_type: dict[str, int],
+    type_peak: dict[str, float],
+    bin_size: int,
+):
+    """Attach the ring legend to the circos figure.
+
+    Only the rings are keyed here. The cytoband greyscale and the
+    grey/dashed noise-arc style are both explained by the linear genome
+    map's legends, and the two figures sit back to back in the same
+    report - repeating them on the circos cost disc space without
+    telling a reader anything the facing figure had not already said.
+    The VAF colorbar beside the disc covers the arc colouring.
+
+    Returns the legend artist, which ``bbox_inches="tight"`` needs
+    listed explicitly or it can crop entries that sit outside the axes.
+    """
+    bin_mb = bin_size / 1_000_000
+    bin_label = (f"{bin_mb:g} Mb" if bin_mb >= 1
+                 else f"{bin_size // 1000:,} kb")
+
+    handles = [
+        mpatches.Patch(
+            facecolor=SV_TYPE_COLOR[t], edgecolor="none",
+            label=f"{t}  {n_svs_by_type.get(t, 0):,}  (peak {int(type_peak[t])})",
+        )
+        for t in CIRCOS_SV_RING_ORDER
+    ]
+    return fig.legend(
+        handles=handles,
+        loc="upper left", bbox_to_anchor=(0.78, 0.88),
+        fontsize=7.5, frameon=True, framealpha=0.9,
+        edgecolor="#CCCCCC", facecolor=PAPER_BG,
+        title=f"SV density rings, outer to inner\n(alpha saturates at the "
+              f"99th-percentile {bin_label} bin)",
+        title_fontsize=7.5, alignment="left",
+    )
+
+
 def plot_circos(
     bnds_unique: list[BND],
+    svs: list[SV],
     contigs: dict[str, int],
     cytoband_path: Path,
     out_path: Path,
@@ -3401,8 +2959,10 @@ def plot_circos(
     filter_label: str,
     breakdown: dict,
     plot_vaf: bool = False,
+    *,
+    bin_size: int = 1_000_000,
 ) -> None:
-    """Render the circos plot (BND ribbons on hg38 cytoband ideogram).
+    """Render the circos plot (SV density rings + BND ribbons on cytobands).
 
     Uses pyCirclize. Writes a PNG to ``out_path`` and closes the figure.
 
@@ -3410,6 +2970,10 @@ def plot_circos(
     ----------
     bnds_unique : list[BND]
         BNDs to plot, already deduplicated and noise-annotated.
+    svs : list[SV]
+        Non-BND SVs, size-filtered upstream. Binned into the four
+        density rings; PASS and noise filtering happens in
+        :func:`_sv_density` so the rings match the linear map exactly.
     contigs : dict[str, int]
         Chromosome lengths from the VCF header.
     cytoband_path : Path
@@ -3431,6 +2995,10 @@ def plot_circos(
         Off by default - readable on a targeted panel, unreadable on
         a WGS call set. Noise-flagged BNDs are never labelled: they
         are deliberately de-emphasised and a label would undo that.
+    bin_size : int, optional
+        Density-ring bin width in bp (default 1,000,000). Must match
+        the linear map's, or the same bin renders at two alphas
+        across one report.
     """
     import tempfile
 
@@ -3461,7 +3029,8 @@ def plot_circos(
         cyto_for_pycirclize = tmp_cyto
 
     circos = Circos.initialize_from_bed(str(tmp_bed), space=2)
-    circos.add_cytoband_tracks((95, 100), str(cyto_for_pycirclize))
+    circos.add_cytoband_tracks((95, 100), str(cyto_for_pycirclize),
+                               cytoband_cmap=CIRCOS_CYTOBAND_COLORS)
 
     name_r = SECTOR_NAME_R_WITH_VAF if plot_vaf else SECTOR_NAME_R
     for sector in circos.sectors:
@@ -3476,9 +3045,22 @@ def plot_circos(
             label_orientation="vertical",
         )
 
+    _, svs_filt, bins_cache, type_peak, type_anchor = _sv_density(
+        svs, contigs, bin_size,
+    )
+    _draw_sv_density_rings(circos, contigs, bins_cache, type_anchor, bin_size)
+    n_svs_by_type = {
+        t: sum(1 for s in svs_filt if s.svtype == t) for t in SV_TYPES
+    }
+
     supports = np.array([b.support for b in bnds_unique], dtype=float)
     smax = supports.max() if supports.size else 1.0
 
+    # Arcs start at the inner edge of the ring stack, so translocations
+    # occupy the disk and located events occupy the rings - the same
+    # separation Bionano Access uses, and the reason the two never
+    # overprint.
+    link_r = CIRCOS_SV_RING_R[0]
     pad = 250_000
     pending_labels: list[tuple] = []
     ordered = sorted(bnds_unique, key=lambda b: (not b.is_noise, b.support))
@@ -3490,7 +3072,8 @@ def plot_circos(
         s2 = (b.chr2, max(0, b.pos2 - pad), min(L2, b.pos2 + pad))
         color, alpha, _ls = render_props(b)
         try:
-            circos.link(s1, s2, color=color, alpha=alpha,
+            circos.link(s1, s2, r1=link_r, r2=link_r,
+                        color=color, alpha=alpha,
                         height_ratio=0.55,
                         linewidth=support_to_lw(b.support, smax, 0.2, 1.0))
         except Exception as e:  # noqa: BLE001
@@ -3512,19 +3095,38 @@ def plot_circos(
                   file=sys.stderr)
 
     fig = circos.plotfig()
-    # Widen the figure so the VAF colorbar sits clearly right of the
-    # circos disk instead of overlapping the outer cytoband ring or
-    # its position tick labels.
+    # Widen the figure so the legends and the VAF colorbar sit clearly
+    # right of the circos disk instead of overlapping the outer
+    # cytoband ring or its position tick labels.
+    #
+    # pyCirclize builds the figure with ``tight_layout=True``, which
+    # re-lays-out the polar axes at draw time - so figure-fraction
+    # coordinates for anything added afterwards are not where they
+    # look. Pin the layout and place the disk explicitly instead, which
+    # also silences the "Axes not compatible with tight_layout" warning
+    # the extra colorbar axes provokes.
     w, h = fig.get_size_inches()
-    fig.set_size_inches(w * 1.30, h)
+    fig.set_layout_engine("none")
+    fig.set_size_inches(w * CIRCOS_FIG_WIDEN, h)
+    # Keep the disk axes square (width_frac * fig_w == height_frac *
+    # fig_h) and centred in the left column, so the disk does not
+    # distort when CIRCOS_FIG_WIDEN changes.
+    m = CIRCOS_DISK_MARGIN
+    circos.ax.set_position([
+        m / CIRCOS_FIG_WIDEN, m,
+        (1.0 - 2 * m) / CIRCOS_FIG_WIDEN, 1.0 - 2 * m,
+    ])
 
-    cax = fig.add_axes([0.95, 0.30, 0.012, 0.40])
+    cax = fig.add_axes([0.795, 0.24, 0.016, 0.40])
     sm = plt.cm.ScalarMappable(cmap=VAF_CMAP, norm=VAF_NORM)
     cb = fig.colorbar(sm, cax=cax, label="VAF")
     _style_vaf_colorbar(cb)
 
+    legend = _add_circos_legend(fig, n_svs_by_type, type_peak, bin_size)
+
     fig.set_facecolor(PAPER_BG)
     fig.savefig(out_path, dpi=200, bbox_inches="tight",
+                bbox_extra_artists=[legend],
                 facecolor=fig.get_facecolor())
     plt.close(fig)
 
@@ -3537,48 +3139,6 @@ def plot_circos(
 # B) Genome SV map
 # ---------------------------------------------------------------------------
 
-def _bin_sv_counts(
-    svs_per_chrom: dict[str, list[SV]],
-    contigs: dict[str, int],
-    bin_size: int,
-) -> tuple[dict, dict[str, float]]:
-    """Bin SV counts per chromosome × type.
-
-    Parameters
-    ----------
-    svs_per_chrom : dict[str, list[SV]]
-        SVs grouped by chromosome.
-    contigs : dict[str, int]
-        Chromosome lengths.
-    bin_size : int
-        Bin width in bp.
-
-    Returns
-    -------
-    bins_cache : dict[str, dict[str, np.ndarray]]
-        ``{chrom: {svtype: counts_array}}``.
-    type_max : dict[str, float]
-        Max bin-count seen per SV type, used for colour normalisation.
-    """
-    bins_cache: dict = {c: {} for c in svs_per_chrom}
-    type_max: dict[str, float] = {t: 1.0 for t in SV_TYPES}
-    for c, chr_svs in svs_per_chrom.items():
-        L = contigs[c]
-        n_bins = (L // bin_size) + 1
-        for t in SV_TYPES:
-            counts = np.zeros(n_bins, dtype=float)
-            for s in chr_svs:
-                if s.svtype != t:
-                    continue
-                b = s.start // bin_size
-                if 0 <= b < n_bins:
-                    counts[b] += 1
-            bins_cache[c][t] = counts
-            if counts.size and counts.max() > type_max[t]:
-                type_max[t] = float(counts.max())
-    return bins_cache, type_max
-
-
 def _draw_chromosome_row(
     ax,
     chrom: str,
@@ -3588,7 +3148,7 @@ def _draw_chromosome_row(
     contig_len: int,
     cytobands: dict,
     bins: dict,
-    type_max: dict[str, float],
+    type_anchor: dict[str, float],
     max_len: int,
 ) -> None:
     """Render one chromosome row: cytoband bar + 4 density strips + label."""
@@ -3608,13 +3168,7 @@ def _draw_chromosome_row(
         counts = bins[t]
         y_strip = y0 + chr_h + k * strip_h
         base_rgb = np.array(to_rgb(SV_TYPE_COLOR[t]))
-        type_max_t = max(type_max[t], 1.0)
-        alphas = np.zeros_like(counts)
-        mask = counts > 0
-        if mask.any():
-            alphas[mask] = (
-                0.40 + 0.60 * np.sqrt(counts[mask] / type_max_t).clip(0, 1)
-            )
+        alphas = sv_density_alpha(counts, type_anchor[t], svtype=t)
         rgba = np.zeros((1, len(counts), 4))
         rgba[0, :, :3] = base_rgb
         rgba[0, :, 3] = alphas
@@ -3694,7 +3248,7 @@ def _add_genome_map_decor(
     ax,
     sample: str,
     breakdown: dict,
-    type_max: dict[str, float],
+    type_peak: dict[str, float],
     n_svs_by_type: dict[str, int],
     n_total: int,
     n_pass: int,
@@ -3730,7 +3284,7 @@ def _add_genome_map_decor(
 
     type_handles = [
         mpatches.Patch(facecolor=SV_TYPE_COLOR[t], edgecolor="black",
-                       label=f"{t} (peak {int(type_max[t])})")
+                       label=f"{t} (peak {int(type_peak[t])})")
         for t in SV_TYPES
     ]
     type_handles.append(plt.Line2D([0], [0], color=NOISE_COLOR,
@@ -3741,7 +3295,8 @@ def _add_genome_map_decor(
         bbox_to_anchor=(0.5, -0.10),
         fontsize=7, frameon=True, framealpha=0.85,
         edgecolor="#cccccc", ncols=5,
-        title=f"SV density per {bin_mb} Mb bin (alpha scaled to peak)",
+        title=f"SV density per {bin_mb} Mb bin "
+              f"(alpha saturates at the 99th-percentile bin)",
     )
     ax.add_artist(leg2)
 
@@ -3796,12 +3351,10 @@ def plot_genome_sv_map(
         The current `--min-svlen` value; used in the figure title for
         annotation only (the actual filtering is applied upstream).
     """
-    chroms_present = [c for c in CHROM_ORDER if c in contigs]
+    chroms_present, svs_filt, bins_cache, type_peak, type_anchor = _sv_density(
+        svs, contigs, bin_size,
+    )
     n = len(chroms_present)
-
-    svs_filt = [s for s in svs if s.is_pass and not s.is_noise]
-    svs_per_chrom = {c: [s for s in svs_filt if s.chrom == c] for c in chroms_present}
-    bins_cache, type_max = _bin_sv_counts(svs_per_chrom, contigs, bin_size)
 
     fig, ax = plt.subplots(figsize=(17, 14))
 
@@ -3817,7 +3370,7 @@ def plot_genome_sv_map(
     for c in chroms_present:
         _draw_chromosome_row(
             ax, c, y_for[c], chr_h, strip_h,
-            contigs[c], cytobands, bins_cache[c], type_max, max_len,
+            contigs[c], cytobands, bins_cache[c], type_anchor, max_len,
         )
 
     _draw_bnd_arcs(
@@ -3827,7 +3380,7 @@ def plot_genome_sv_map(
 
     n_svs_by_type = {t: sum(1 for s in svs_filt if s.svtype == t) for t in SV_TYPES}
     _add_genome_map_decor(
-        fig, ax, sample, breakdown, type_max, n_svs_by_type,
+        fig, ax, sample, breakdown, type_peak, n_svs_by_type,
         n_total, n_pass, filter_label,
         bin_size, min_svlen, max_len, n, row_h,
     )
@@ -3844,10 +3397,10 @@ def plot_genome_sv_map(
 
 
 # ---------------------------------------------------------------------------
-# Compound-het renderer
+# HTML reports
 # ---------------------------------------------------------------------------
 
-# Build label used in the panel title and HTML report. ``hg38`` and
+# Build label used in the HTML report. ``hg38`` and
 # ``t2t`` are stored lowercase internally; surface the cytogeneticist-
 # friendly capitalised forms for display.
 _BUILD_LABEL: dict[str, str] = {
@@ -3856,285 +3409,53 @@ _BUILD_LABEL: dict[str, str] = {
 }
 
 
-def _build_phase_blocks(
-    variants: list[PhasedVariant],
-) -> list[PhaseBlock]:
-    """Group variants into phase blocks by ``ps``.
-
-    Each block's ``start``/``end`` is the min/max position of the
-    variants in that phase set. ``n_phased`` counts variants of any
-    consequence. Returns blocks sorted by ``start``.
-    """
-    by_ps: dict[int, list[PhasedVariant]] = {}
-    for v in variants:
-        by_ps.setdefault(v.ps, []).append(v)
-    blocks: list[PhaseBlock] = []
-    for ps, vs in by_ps.items():
-        positions = [v.pos for v in vs]
-        blocks.append(PhaseBlock(
-            ps=ps, start=min(positions), end=max(positions),
-            n_phased=len(vs),
-        ))
-    blocks.sort(key=lambda b: b.start)
-    return blocks
 
 
-def draw_compound_het_panel(
-    ax,
-    gene: Gene,
-    variants: list[PhasedVariant],
-    phase_blocks: list[PhaseBlock],
-) -> tuple[int, int]:
-    """Render one gene's phased-haplotype panel onto ``ax``.
-
-    Visual spec (locked 2026-05-02; do not relitigate) ports verbatim
-    from the prototype's ``draw_panel`` (compound-het-plotter
-    ``plot_gene.py`` lines 266-415):
-
-    - exon track at top (thin grey line + dark-grey rectangles)
-    - two horizontal hap lines H1 / H2
-    - mint phase-block rectangles spanning both haps with off-edge
-      arrows when the block extends past the gene window
-    - missense lollipops on the canonical transcript (stem outward
-      from hap line; coloured circle at tip)
-    - non-missense ticks on the hap line for synonymous / intronic /
-      etc. that landed in the same phase block
-    - panel title with build, locus, and ``T trans, C cis`` summary
-
-    The renderer does NOT draw trans/cis arcs. Opposite-hap dots in
-    the same block already read as trans, same-hap dots read as cis,
-    and arcs were visual clutter (removed in the prototype). Pair
-    counts are computed via :func:`classify_pairs` for the title.
-
-    Returns ``(n_trans, n_cis)`` for the report's run-metadata.
-    """
-    pad = 0.02 * (gene.end - gene.start) if gene.end > gene.start else 0
-    xmin = gene.start - pad
-    xmax = gene.end + pad
-    span = xmax - xmin if xmax > xmin else 1.0
-    ax.set_xlim(xmin, xmax)
-    ax.set_ylim(-1.4, 2.0)
-    ax.set_yticks([HAP_Y[0], HAP_Y[1]])
-    ax.set_yticklabels(["H1", "H2"])
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.spines["left"].set_visible(False)
-    ax.tick_params(axis="y", length=0)
-
-    # Format x-axis as genome positions. matplotlib defaults to a
-    # scientific-notation offset (e.g. ``1.427e8``) for the large
-    # integers typical of genomic coordinates; that's unreadable for
-    # cytogeneticists. Always show in Mb (genome positions are
-    # always Mb-scale), with decimals chosen by the gene span so
-    # adjacent tick labels stay distinguishable. For tiny synthetic
-    # windows (< 1 kb) drop to bp. FuncFormatter replaces the
-    # default ScalarFormatter so the offset is gone implicitly.
-    if span >= 10e6:
-        decimals, unit, divisor = 0, "Mb", 1e6
-    elif span >= 1e6:
-        decimals, unit, divisor = 1, "Mb", 1e6
-    elif span >= 100e3:
-        decimals, unit, divisor = 2, "Mb", 1e6
-    elif span >= 10e3:
-        decimals, unit, divisor = 3, "Mb", 1e6
-    elif span >= 1e3:
-        decimals, unit, divisor = 1, "kb", 1e3
-    else:
-        decimals, unit, divisor = 0, "bp", 1
-    def _genome_pos_fmt(x, _pos, _d=decimals, _u=unit, _v=divisor):
-        if _v == 1:
-            return f"{int(x):,} {_u}"
-        return f"{x / _v:.{_d}f} {_u}"
-    ax.xaxis.set_major_formatter(mticker.FuncFormatter(_genome_pos_fmt))
-
-    block_y_top = 1.2
-    block_y_bot = -1.2
-    arrow_dx = span * 0.012
-    for idx, b in enumerate(phase_blocks):
-        x_left_clip = max(b.start, xmin)
-        x_right_clip = min(b.end, xmax)
-        if x_right_clip <= x_left_clip:
-            continue
-        ax.add_patch(mpatches.Rectangle(
-            (x_left_clip, block_y_bot),
-            x_right_clip - x_left_clip,
-            block_y_top - block_y_bot,
-            facecolor=BLOCK_FILL,
-            edgecolor=BLOCK_EDGE, linewidth=BLOCK_EDGE_LW, zorder=0,
-        ))
-        if b.start < xmin:
-            ax.annotate(
-                "", xy=(xmin - arrow_dx * 0.4, 0),
-                xytext=(xmin + arrow_dx, 0),
-                arrowprops=dict(
-                    arrowstyle="->,head_width=0.4,head_length=0.5",
-                    color="#666", lw=0.9,
-                ),
-                zorder=2,
-            )
-        if b.end > xmax:
-            ax.annotate(
-                "", xy=(xmax + arrow_dx * 0.4, 0),
-                xytext=(xmax - arrow_dx, 0),
-                arrowprops=dict(
-                    arrowstyle="->,head_width=0.4,head_length=0.5",
-                    color="#666", lw=0.9,
-                ),
-                zorder=2,
-            )
-        label_x = (x_left_clip + x_right_clip) / 2
-        block_kb = (b.end - b.start) / 1000.0
-        ax.text(
-            label_x, block_y_top + 0.05,
-            f"block {idx + 1}  ·  PS {b.ps}  ·  {b.n_phased} phased  ·  "
-            f"{block_kb:.0f} kb",
-            ha="center", va="bottom", fontsize=6.5, color="#666",
-            zorder=2,
-        )
-
-    if gene.canonical_exons:
-        ax.plot(
-            [gene.start, gene.end], [EXON_Y, EXON_Y],
-            color=EXON_CONNECTOR_COLOR, lw=0.7, zorder=1,
-        )
-        for s, e in gene.canonical_exons:
-            ax.add_patch(mpatches.Rectangle(
-                (s, EXON_Y - EXON_H / 2), max(e - s, 1), EXON_H,
-                facecolor=EXON_FILL, edgecolor="none", zorder=2,
-            ))
-
-    ax.axhline(HAP_Y[0], color="#888", lw=0.7, zorder=1)
-    ax.axhline(HAP_Y[1], color="#888", lw=0.7, zorder=1)
-
-    missense = [
-        v for v in variants
-        if v.is_canonical_transcript and is_missense_consequence(v.consequence)
-    ]
-    other = [v for v in variants if v not in missense]
-
-    for v in other:
-        if v.variant_hap not in (1, 2):
-            continue
-        y = HAP_Y[v.variant_hap - 1]
-        ax.plot(
-            v.pos, y, marker=NON_MISSENSE_MARKER,
-            color=NON_MISSENSE_COLOR, markersize=NON_MISSENSE_SIZE,
-            markeredgecolor=NON_MISSENSE_COLOR,
-            markeredgewidth=NON_MISSENSE_EDGE_WIDTH, zorder=3,
-        )
-
-    for v in missense:
-        if v.variant_hap not in (1, 2):
-            continue
-        y_line = HAP_Y[v.variant_hap - 1]
-        y_dot = LOLLIPOP_TIP_Y[v.variant_hap - 1]
-        color = CLNSIG_COLOR.get(v.clnsig, DEFAULT_CLNSIG_COLOR)
-        ax.plot(
-            [v.pos, v.pos], [y_line, y_dot],
-            color="#666", lw=0.6, zorder=3,
-        )
-        ax.plot(
-            v.pos, y_dot, marker="o", color=color, markersize=LOLLIPOP_MS,
-            markeredgecolor="black", markeredgewidth=LOLLIPOP_EDGE_LW,
-            zorder=5,
-        )
-
-    n_trans, n_cis = classify_pairs(variants)
-    # Just the gene symbol baked into the figure so a downloaded PNG
-    # carries its identity. Locus, build, and stats live in the HTML
-    # <h2> + chip row above the embedded image.
-    ax.set_title(gene.symbol, fontsize=14, loc="left", fontweight="bold")
-    return n_trans, n_cis
 
 
-def render_compound_het_png(
-    gene: Gene,
-    variants: list[PhasedVariant],
-    phase_blocks: list[PhaseBlock],
-    *,
-    reference: str,
-) -> tuple[bytes, dict]:
-    """Render one gene panel + legend to a PNG byte string.
-
-    Returns ``(png_bytes, stats)`` where ``stats`` is a small dict
-    of per-gene counts (``n_trans``, ``n_cis``, ``n_missense``,
-    ``n_total``, ``n_blocks``) for inclusion in the HTML report's
-    run-metadata.
-
-    Width auto-scales with variant count, capped at 24 inches; dpi
-    is reduced so the rendered PNG never exceeds
-    :data:`MAX_PX_WIDTH` pixels (Anthropic many-image upload cap).
-    """
-
-    n_vars = len(variants)
-    width = max(12, min(24, 8 + n_vars * 0.4))
-    # No constrained_layout: it does not reserve space for a
-    # figure-level legend, which leaves the legend handles overlapping
-    # the x-axis tick labels. Manage spacing with subplots_adjust
-    # instead, then drop bbox_inches="tight" so savefig respects the
-    # reserved bottom margin.
-    fig, ax = plt.subplots(figsize=(width, 5.0))
-    fig.subplots_adjust(left=0.04, right=0.99, top=0.90, bottom=0.18)
-    n_trans, n_cis = draw_compound_het_panel(
-        ax, gene, variants, phase_blocks,
-    )
-
-    legend_marker_size = 11
-    legend_handles = [
-        Line2D([0], [0], marker="o", color="w",
-               markerfacecolor=CLNSIG_COLOR["p_or_lp"],
-               markersize=legend_marker_size, label="P / LP"),
-        Line2D([0], [0], marker="o", color="w",
-               markerfacecolor=CLNSIG_COLOR["vus"],
-               markersize=legend_marker_size, label="VUS"),
-        Line2D([0], [0], marker="o", color="w",
-               markerfacecolor=CLNSIG_COLOR["conflicting"],
-               markersize=legend_marker_size, label="conflicting"),
-        Line2D([0], [0], marker="o", color="w",
-               markerfacecolor=CLNSIG_COLOR["benign"],
-               markersize=legend_marker_size, label="benign"),
-        Line2D([0], [0], marker="o", color="w",
-               markerfacecolor=DEFAULT_CLNSIG_COLOR,
-               markersize=legend_marker_size, label="no ClinVar"),
-        Line2D([0], [0], marker=NON_MISSENSE_MARKER, color="w",
-               markerfacecolor=NON_MISSENSE_COLOR,
-               markeredgecolor=NON_MISSENSE_COLOR,
-               markersize=max(5, NON_MISSENSE_SIZE) + 2,
-               label="synonymous"),
-    ]
-    fig.legend(
-        handles=legend_handles, loc="lower center", ncol=6,
-        fontsize=10.5, frameon=False,
-        bbox_to_anchor=(0.5, 0.02),
-        bbox_transform=fig.transFigure,
-    )
-
-    target_dpi = min(150.0, MAX_PX_WIDTH / fig.get_figwidth())
-    buf = io.BytesIO()
-    fig.set_facecolor(PAPER_BG)
-    ax.set_facecolor(PAPER_BG)
-    fig.savefig(buf, dpi=target_dpi, format="png",
-                facecolor=fig.get_facecolor())
-    plt.close(fig)
-    stats = {
-        "n_trans": n_trans, "n_cis": n_cis,
-        "n_missense": len([
-            v for v in variants
-            if v.is_canonical_transcript
-            and is_missense_consequence(v.consequence)
-        ]),
-        "n_total": len(variants), "n_blocks": len(phase_blocks),
-    }
-    return buf.getvalue(), stats
-
-
-# ---------------------------------------------------------------------------
-# Self-contained HTML report
-# ---------------------------------------------------------------------------
 
 def _esc(s) -> str:
     """Shorthand for html.escape on arbitrary values."""
     return html_mod.escape(str(s))
+
+
+_HTML_REPORT_CSS = """
+:root { --fg: #1a1a1a; --bg: __PAPER_BG__; --muted: #6b6b6b; --border: #ddd;
+        --chip-bg: #f0f0f0; --chip-warn: #fff4d6; }
+* { box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
+       max-width: 1500px; margin: 1.5em auto; color: var(--fg); padding: 0 1.5em; line-height: 1.5;
+       background: var(--bg); }
+header { margin-bottom: 1.5em; }
+header svg.banner { display: block; width: 100%; height: auto;
+                    margin: 0 auto 0.4em; }
+.chips { margin-bottom: 0.5em; font-size: 0.9em; }
+.chip { display: inline-block; padding: 0.15em 0.55em; margin: 0.2em 0.3em 0.2em 0;
+        background: var(--chip-bg); border-radius: 4px; }
+.chip.ok { background: #e6f5e6; }
+.chip.warn { background: var(--chip-warn); border: 1px solid #e0c060; }
+.basis { color: var(--muted); font-size: 0.85em; margin-top: 0.5em; }
+.figure { text-align: center; margin: 1.5em 0; }
+.figure h2 { font-weight: 500; font-size: 1.05em; color: var(--muted);
+              margin: 0.5em 0; text-align: center; }
+.figure h2 .sample { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                     color: var(--fg); }
+.figure img { max-width: 100%; height: auto; }
+details.meta { margin: 3em 0 1em; padding: 0.8em 1em; background: #fafafa;
+               border: 1px solid var(--border); border-radius: 6px; }
+details.meta > summary { cursor: pointer; font-weight: 500; color: var(--muted);
+                          padding: 0.2em 0; user-select: none; }
+details.meta[open] > summary { margin-bottom: 0.6em; }
+footer { color: var(--muted); font-size: 0.8em; text-align: center; margin: 4em 0 1em; }
+footer a { color: inherit; text-decoration: underline; text-decoration-color: #cfcfcf;
+           text-underline-offset: 2px; }
+footer a:hover { color: var(--fg); text-decoration-color: var(--muted); }
+"""
+
+# One source of truth for the page background: the embedded figures
+# are rendered on PAPER_BG, so the page must use the same value or
+# each figure shows as an off-white box on a white page.
+_HTML_REPORT_CSS = _HTML_REPORT_CSS.replace("__PAPER_BG__", PAPER_BG)
 
 
 def make_html_report(
@@ -4304,240 +3625,6 @@ def make_karyotype_report(
     out_path.write_text(html)
 
 
-def make_compound_het_report(
-    sample: str,
-    gene_panels: list[tuple[Gene, bytes, dict]],
-    out_path: Path,
-    *,
-    reference: str,
-    n_genes_scanned: int,
-    n_genes_plotted: int,
-    n_genes_capped: int,
-    clinvar_source: str,
-    canonical_exons_source: str,
-    refusal_counts: dict[str, object],
-    selection_rule: str,
-    empty_genes: list[str],
-    strict_symbols: set[str] | None = None,
-    is_auto_select: bool = False,
-) -> None:
-    """Assemble the self-contained compound-het HTML report.
-
-    One section per plotted gene with anchor ``id="gene-<symbol>"``.
-    Run-metadata sits in a collapsible ``<details>`` block at the
-    bottom: ClinVar source, canonical-exons source, refusal counters,
-    selection rule, genes-scanned vs plotted, and a T2T-mode
-    disclaimer about HGVSc-based ClinVar matching being best-effort.
-
-    In auto-select mode the panels are split into two clearly
-    labelled groups:
-
-    - *strict* (both variants P/LP or VUS — true compound-het)
-    - *extended* (anchor P/LP-or-VUS, partner not benign)
-
-    The strict heading appears even when its subset is empty, so
-    readers always see the dichotomy. Explicit ``--gene`` mode
-    skips the split and renders panels in a single section.
-
-    Empty genes (``--gene FOO`` with 0 phased hets in the gene
-    window) get a placeholder section so multi-gene runs don't
-    silently drop them.
-    """
-    sample_e = _esc(sample)
-    build_label_e = _esc(_BUILD_LABEL.get(reference, reference))
-    strict_set = strict_symbols or set()
-
-    def _render_gene_panel(gene: Gene, png: bytes, stats: dict) -> str:
-        png_uri = (
-            "data:image/png;base64,"
-            + base64.b64encode(png).decode("ascii")
-        )
-        symbol_e = _esc(gene.symbol)
-        locus_e = _esc(
-            f"{gene.chrom}:{gene.start:,}-{gene.end:,} ({gene.strand})"
-        )
-        stats_chips = (
-            f'<span class="chip">{stats["n_missense"]} missense / '
-            f'{stats["n_total"]} phased hets</span>'
-            f'<span class="chip">{stats["n_blocks"]} block(s)</span>'
-            f'<span class="chip">{stats["n_trans"]} trans</span>'
-            f'<span class="chip">{stats["n_cis"]} cis</span>'
-        )
-        return (
-            f'<section class="figure gene-panel" id="gene-{symbol_e}">\n'
-            f'  <h2>{build_label_e} &middot; {locus_e}</h2>\n'
-            f'  <div class="chips">{stats_chips}</div>\n'
-            f'  <img src="{png_uri}" '
-            f'alt="phased haplotype panel for {symbol_e}">\n'
-            f'</section>\n'
-        )
-
-    def _empty_panel(symbol: str, blurb: str) -> str:
-        symbol_e = _esc(symbol)
-        return (
-            f'<section class="figure gene-panel empty" id="gene-{symbol_e}">\n'
-            f'  <h2><span class="sample">{symbol_e}</span></h2>\n'
-            f'  <p class="placeholder">{blurb}</p>\n'
-            f'</section>\n'
-        )
-
-    sections: list[str] = []
-    if is_auto_select:
-        strict_panels = [
-            p for p in gene_panels if p[0].symbol in strict_set
-        ]
-        extended_panels = [
-            p for p in gene_panels if p[0].symbol not in strict_set
-        ]
-        sections.append(
-            '<div class="auto-select-section strict-section">\n'
-            '  <h2 class="section-heading">Strict compound-het '
-            '<span class="section-blurb">(both variants ClinVar P/LP '
-            'or VUS)</span></h2>\n'
-        )
-        if strict_panels:
-            for tup in strict_panels:
-                sections.append(_render_gene_panel(*tup))
-        else:
-            sections.append(
-                '<p class="section-empty">No genes meet the strict '
-                'rule in this VCF.</p>\n'
-            )
-        sections.append('</div>\n')
-
-        sections.append(
-            '<div class="auto-select-section extended-section">\n'
-            '  <h2 class="section-heading">Extended candidates '
-            '<span class="section-blurb">(anchor P/LP or VUS, '
-            'partner conflicting / no-ClinVar / P/LP / VUS)'
-            '</span></h2>\n'
-        )
-        if extended_panels:
-            for tup in extended_panels:
-                sections.append(_render_gene_panel(*tup))
-        else:
-            sections.append(
-                '<p class="section-empty">No additional extended '
-                'candidates in this VCF.</p>\n'
-            )
-        sections.append('</div>\n')
-    else:
-        # Explicit --gene mode: single flat section, no strict/extended split.
-        for tup in gene_panels:
-            sections.append(_render_gene_panel(*tup))
-
-    for symbol in empty_genes:
-        sections.append(_empty_panel(
-            symbol,
-            f"No phased het variants in {_esc(symbol)} in the input "
-            f"VCF; nothing to plot.",
-        ))
-
-    refusal_keys = ("kept", "unphased", "non_het", "multi_allelic",
-                    "no_canonical_csq")
-    refusal_chips = "".join(
-        f'<span class="chip">{_esc(k.replace("_", " "))} = '
-        f'{_esc(refusal_counts.get(k, 0))}</span>'
-        for k in refusal_keys
-    )
-
-    cap_chip = (
-        f'<span class="chip warn">capped at {n_genes_capped} genes; '
-        f'pass --max-genes higher to plot all</span>'
-        if n_genes_capped > 0 else ""
-    )
-    html = (
-        "<!DOCTYPE html>\n<html lang=\"en\"><head>\n"
-        "<meta charset=\"UTF-8\">\n"
-        f"<title>molamola compound-het — {sample_e}</title>\n"
-        f"<style>{_HTML_REPORT_CSS}{_COMPOUND_HET_REPORT_CSS}</style>\n"
-        "</head>\n<body>\n"
-        f"<header>\n{_header_svg()}</header>\n"
-        f"<div class=\"chips\">"
-        f'<span class="chip">sample: {sample_e}</span>'
-        f'<span class="chip">build: {build_label_e}</span>'
-        f'<span class="chip">{n_genes_plotted} of '
-        f'{n_genes_scanned} candidate gene(s) plotted</span>'
-        f"{cap_chip}"
-        f"</div>\n"
-        + "".join(sections)
-        + f"<details class=\"meta\">\n"
-        f"  <summary>run metadata</summary>\n"
-        f"  <div class=\"chips\"><strong>VCF parse:</strong> {refusal_chips}</div>\n"
-        f"  <div class=\"chips\"><strong>selection rule:</strong> "
-        f"{_esc(selection_rule)}</div>\n"
-        f"  <div class=\"basis\">ClinVar source: "
-        f"{_esc(clinvar_source)}</div>\n"
-        f"  <div class=\"basis\">canonical exons source: "
-        f"{_esc(canonical_exons_source)}</div>\n"
-        f"</details>\n"
-        f"<footer>generated by <code>molamola</code> "
-        f"&middot; figures via "
-        f"<a href=\"https://matplotlib.org/\">matplotlib</a></footer>\n"
-        "</body></html>\n"
-    )
-    out_path.write_text(html)
-
-
-_COMPOUND_HET_REPORT_CSS = """
-.gene-panel { margin: 2.2em 0; padding-top: 0.6em;
-              border-top: 1px solid var(--border); }
-.auto-select-section > .gene-panel:first-of-type { border-top: none;
-                                                    padding-top: 0; }
-.gene-panel h2 { text-align: left; margin: 0.2em 0 0.4em; }
-.gene-panel.empty .placeholder { color: var(--muted); font-style: italic;
-                                  text-align: left; margin: 0.4em 0; }
-.auto-select-section { margin: 2.4em 0 2em; }
-.section-heading { font-size: 1.15em; font-weight: 600;
-                    border-bottom: 2px solid var(--border);
-                    padding: 0 0 0.3em; margin: 0.2em 0 0.6em;
-                    text-align: left; }
-.section-blurb { font-weight: 400; color: var(--muted);
-                  font-size: 0.85em; margin-left: 0.4em; }
-.strict-section .section-heading { border-bottom-color: #c0143c; }
-.extended-section .section-heading { border-bottom-color: #f4a013; }
-.section-empty { color: var(--muted); font-style: italic;
-                  margin: 0.4em 0 1em; }
-"""
-
-
-_HTML_REPORT_CSS = """
-:root { --fg: #1a1a1a; --bg: __PAPER_BG__; --muted: #6b6b6b; --border: #ddd;
-        --chip-bg: #f0f0f0; --chip-warn: #fff4d6; }
-* { box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
-       max-width: 1500px; margin: 1.5em auto; color: var(--fg); padding: 0 1.5em; line-height: 1.5;
-       background: var(--bg); }
-header { margin-bottom: 1.5em; }
-header svg.banner { display: block; width: 100%; height: auto;
-                    margin: 0 auto 0.4em; }
-.chips { margin-bottom: 0.5em; font-size: 0.9em; }
-.chip { display: inline-block; padding: 0.15em 0.55em; margin: 0.2em 0.3em 0.2em 0;
-        background: var(--chip-bg); border-radius: 4px; }
-.chip.ok { background: #e6f5e6; }
-.chip.warn { background: var(--chip-warn); border: 1px solid #e0c060; }
-.basis { color: var(--muted); font-size: 0.85em; margin-top: 0.5em; }
-.figure { text-align: center; margin: 1.5em 0; }
-.figure h2 { font-weight: 500; font-size: 1.05em; color: var(--muted);
-              margin: 0.5em 0; text-align: center; }
-.figure h2 .sample { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-                     color: var(--fg); }
-.figure img { max-width: 100%; height: auto; }
-details.meta { margin: 3em 0 1em; padding: 0.8em 1em; background: #fafafa;
-               border: 1px solid var(--border); border-radius: 6px; }
-details.meta > summary { cursor: pointer; font-weight: 500; color: var(--muted);
-                          padding: 0.2em 0; user-select: none; }
-details.meta[open] > summary { margin-bottom: 0.6em; }
-footer { color: var(--muted); font-size: 0.8em; text-align: center; margin: 4em 0 1em; }
-footer a { color: inherit; text-decoration: underline; text-decoration-color: #cfcfcf;
-           text-underline-offset: 2px; }
-footer a:hover { color: var(--fg); text-decoration-color: var(--muted); }
-"""
-
-# One source of truth for the page background: the embedded figures
-# are rendered on PAPER_BG, so the page must use the same value or
-# each figure shows as an off-white box on a white page.
-_HTML_REPORT_CSS = _HTML_REPORT_CSS.replace("__PAPER_BG__", PAPER_BG)
 
 
 def _header_svg() -> str:
@@ -4577,11 +3664,9 @@ def _header_svg() -> str:
 def _add_common_args(p) -> None:
     """Top-level args shared by all modes."""
     p.add_argument("--vcf", default=None, type=Path,
-                   help="input VCF. molamola auto-detects the plot type "
-                        "from the header: ##INFO=<ID=SVTYPE> selects the "
-                        "SV / cytogenetics report; ##INFO=<ID=CSQ> + "
-                        "##FORMAT=<ID=PS> selects the per-gene phased-"
-                        "haplotype panels (compound-het). Required "
+                   help="input VCF. ##INFO=<ID=SVTYPE> selects the "
+                        "SV / cytogenetics report; any other shape is "
+                        "refused rather than plotted on a guess. Required "
                         "unless --mosdepth is given; when combined with "
                         "--mosdepth the VCF is consumed only as the BAF "
                         "source for the karyotype panel.")
@@ -4599,10 +3684,9 @@ def _add_common_args(p) -> None:
         "--reference",
         choices=list(SUPPORTED_REFERENCES),
         default="hg38",
-        help="reference assembly the input VCF was called against. "
-             "SV mode supports hg38 + T2T-CHM13v2.0; compound-het "
-             "mode is hg38-only (the bundled canonical-exon and "
-             "ClinVar refs are hg38-coordinate). Default hg38.",
+        help="reference assembly the input was called against. "
+             "Both modes support hg38 and T2T-CHM13v2.0 via bundled "
+             "cytobands, masks and GC tables. Default hg38.",
     )
     p.add_argument("--sample", default=None,
                    help="sample label for the report header "
@@ -4679,28 +3763,6 @@ def _add_sv_args(p) -> None:
     )
 
 
-def _add_compound_het_args(p) -> None:
-    """Compound-het flags. Used when the VCF carries CSQ + PS headers."""
-    p.add_argument("--gene", action="append", default=None, metavar="SYMBOL",
-                   help="plot exactly this gene; repeatable. Plots "
-                        "regardless of variant count (with clear "
-                        "messaging for empty cases). When omitted, the "
-                        "auto-select rule picks candidate genes.")
-    p.add_argument("--clinvar", type=Path, default=None,
-                   help="override the bundled ClinVar lookup. Accepts "
-                        "either molamola's reduced TSV (~13 MB; default "
-                        "at data/clinvar.hg38.tsv.xz) or NCBI's raw "
-                        "ClinVar VCF (190+ MB). Format auto-detected.")
-    p.add_argument("--canonical-exons", type=Path, default=None,
-                   help="override the bundled canonical-exon TSV "
-                        "(default: data/canonical_exons.hg38.tsv.gz)")
-    p.add_argument("--min-pair-count", type=int, default=1,
-                   help="auto-select threshold: gene needs >= N trans "
-                        "pairs in a single phase set, where one anchor "
-                        "is ClinVar P/LP or VUS and the partner is not "
-                        "benign. Ignored when --gene is given. Default 1.")
-    p.add_argument("--max-genes", type=int, default=50,
-                   help="cap number of auto-selected genes. Default 50.")
 
 
 def _add_karyotype_args(p) -> None:
@@ -4812,8 +3874,8 @@ def _add_karyotype_args(p) -> None:
 def build_argparser() -> argparse.ArgumentParser:
     """Construct the molamola CLI parser.
 
-    Single flat parser; no subcommands. The plot type is chosen by
-    input: ``--vcf`` selects SV or compound-het mode by header
+    Single flat parser; no subcommands. The report type is chosen by
+    input: ``--vcf`` selects SV mode by header
     (see :func:`detect_vcf_mode`); ``--mosdepth`` selects karyotype
     coverage mode. Either is required; combining both adds a BAF
     panel to the karyotype figure. Mode-specific flag groups are
@@ -4829,11 +3891,6 @@ def build_argparser() -> argparse.ArgumentParser:
         "SV-mode flags (used when input VCF has ##INFO=<ID=SVTYPE,...>)"
     )
     _add_sv_args(sv_group)
-    ch_group = p.add_argument_group(
-        "Compound-het mode flags (used when input VCF has "
-        "##INFO=<ID=CSQ,...> + ##FORMAT=<ID=PS,...>)"
-    )
-    _add_compound_het_args(ch_group)
     ky_group = p.add_argument_group(
         "Karyotype-mode flags (used when --mosdepth is given)"
     )
@@ -5038,9 +4095,9 @@ def plot_main(args: argparse.Namespace) -> int:
 
     # Render both figures into in-memory PNG buffers — no temp files.
     circos_buf = io.BytesIO()
-    plot_circos(unique_bnds, contigs, cytoband_file,
+    plot_circos(unique_bnds, svs, contigs, cytoband_file,
                 circos_buf, sample, n_total, n_pass, args.filter, bd,
-                plot_vaf=args.plotvaf)
+                plot_vaf=args.plotvaf, bin_size=args.bin_size)
     sv_map_buf = io.BytesIO()
     plot_genome_sv_map(unique_bnds, svs, contigs, cytobands,
                         sv_map_buf, sample, n_total, n_pass, args.filter, bd,
@@ -5075,214 +4132,6 @@ def plot_main(args: argparse.Namespace) -> int:
     return 0
 
 
-def compound_het_main(args: argparse.Namespace) -> int:
-    """Execute the compound-het render path.
-
-    Reads a phased small-variant VCF with VEP CSQ annotation, loads
-    bundled canonical-exon and ClinVar references, picks gene(s) to
-    plot (explicit ``--gene`` or auto-select), renders one panel per
-    gene, and assembles a self-contained HTML report.
-
-    Compound-het mode is hg38-only: ClinVar is hg38-coordinate and
-    coordinate-based lookup needs the input VCF on the same build.
-    T2T support will land once a non-coordinate matching path is in
-    place.
-
-    Returns the process exit code:
-    - ``0`` on success (including "0 candidate genes" — empty result
-      is a valid finding).
-    - ``1`` on hard refusals (T2T input, unphased VCF, missing CSQ,
-      unknown gene symbol, missing bundled reference, etc).
-    - ``2`` on reference-hint mismatch without ``--force``.
-    """
-    if args.reference != "hg38":
-        print(f"ERROR: compound-het mode is hg38-only "
-              f"(--reference {args.reference} not supported). "
-              f"ClinVar coordinates are hg38; T2T support will land "
-              f"once a non-coordinate matching path is in place.",
-              file=sys.stderr)
-        return 1
-
-    hint = detect_reference_hint(args.vcf.name)
-    if hint is not None and hint != args.reference:
-        msg = (
-            f"VCF filename {args.vcf.name!r} suggests --reference "
-            f"{hint} but --reference {args.reference} was given"
-        )
-        if args.force:
-            print(f"  WARNING: {msg}. Continuing because of --force.",
-                  file=sys.stderr)
-        else:
-            print(f"ERROR: {msg}. Use --force to override.",
-                  file=sys.stderr)
-            return 2
-
-    out_dir = args.out if args.out is not None else args.vcf.resolve().parent
-    out_dir.mkdir(parents=True, exist_ok=True)
-    sample = (args.sample
-              or args.vcf.name.replace(".vcf.gz", "").replace(".vcf", ""))
-
-    # Load canonical-exon table (bundled or override).
-    if args.canonical_exons is not None:
-        exon_path = args.canonical_exons
-        exon_source = str(exon_path)
-    else:
-        try:
-            exon_path = find_canonical_exon_file()
-        except FileNotFoundError as e:
-            print(f"ERROR: {e}", file=sys.stderr)
-            return 1
-        exon_source = f"(bundled) {exon_path.name}"
-    try:
-        genes = load_canonical_exons(exon_path)
-    except (ValueError, OSError) as e:
-        print(f"ERROR: failed to load canonical exons: {e}",
-              file=sys.stderr)
-        return 1
-    print(f"Loaded {len(genes)} canonical-transcript genes from "
-          f"{exon_path.name}")
-
-    # Read phased VCF.
-    try:
-        variants, parse_summary = read_phased_vcf(args.vcf)
-    except ValueError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return 1
-    print(f"Phased VCF: kept {parse_summary['kept']} records, "
-          f"refused unphased={parse_summary['unphased']}, "
-          f"non_het={parse_summary['non_het']}, "
-          f"multi_allelic={parse_summary['multi_allelic']}, "
-          f"no_canonical_csq={parse_summary['no_canonical_csq']}")
-    if not variants:
-        print("ERROR: VCF parsed cleanly but yielded no phased het "
-              "variants; nothing to plot", file=sys.stderr)
-        return 1
-
-    # Load ClinVar (bundled or override) and annotate by chrom+pos+ref+alt.
-    # Compound-het mode is hg38-only as of v0.3.1 (T2T support deferred
-    # until a non-coordinate-based matching path lands; the reference
-    # check above already refused t2t).
-    # Loaders return buckets directly; no canon_clnsig pass needed here.
-    clinvar_path: Path | None
-    if args.clinvar is not None:
-        clinvar_path = args.clinvar
-        clinvar_source = str(clinvar_path)
-    else:
-        try:
-            clinvar_path = find_clinvar_file()
-            clinvar_source = f"(bundled) {clinvar_path.name}"
-        except FileNotFoundError:
-            clinvar_path = None
-            clinvar_source = "(none — all lollipops grey)"
-
-    if clinvar_path is None:
-        annotated = list(variants)
-    else:
-        keys = {(v.chrom, v.pos, v.ref, v.alt) for v in variants}
-        try:
-            lookup = load_clinvar_lookup(
-                clinvar_path, keys_of_interest=keys,
-            )
-        except (OSError, ValueError) as e:
-            print(f"ERROR: failed to load ClinVar source: {e}",
-                  file=sys.stderr)
-            return 1
-        annotated = [
-            v.with_clnsig(lookup.get((v.chrom, v.pos, v.ref, v.alt)))
-            for v in variants
-        ]
-    print(f"ClinVar annotation: {sum(1 for v in annotated if v.clnsig)} "
-          f"of {len(annotated)} variants matched")
-
-    # Determine gene set to plot.
-    empty_genes: list[str] = []
-    strict_set: set[str] = set()
-    if args.gene:
-        unknown = [s for s in args.gene if s not in genes]
-        if unknown:
-            print(f"ERROR: gene(s) not found in {args.reference} "
-                  f"canonical exon table: {', '.join(unknown)}",
-                  file=sys.stderr)
-            return 1
-        plot_symbols = list(args.gene)
-        selection_rule = (
-            f"explicit --gene: {', '.join(plot_symbols)}"
-        )
-    else:
-        strict, extended_only = find_compound_het_candidates(
-            annotated, genes,
-            min_pair_count=args.min_pair_count,
-        )
-        strict_set = set(strict)
-        plot_symbols = strict + extended_only
-        selection_rule = (
-            f"auto-select: >= {args.min_pair_count} trans pair(s) in "
-            f"same phase set with anchor ClinVar P/LP or VUS, partner "
-            f"not benign. Strict subset: pairs where BOTH variants "
-            f"are P/LP or VUS."
-        )
-
-    n_genes_scanned = len(plot_symbols)
-    n_genes_capped = 0
-    if not args.gene and n_genes_scanned > args.max_genes:
-        n_genes_capped = n_genes_scanned - args.max_genes
-        plot_symbols = plot_symbols[:args.max_genes]
-        print(f"  WARNING: {n_genes_scanned} candidate genes; capping "
-              f"at {args.max_genes}; pass --max-genes higher to plot all",
-              file=sys.stderr)
-
-    if not plot_symbols and not args.gene:
-        print(f"0 candidate genes (rule: {selection_rule})",
-              file=sys.stderr)
-        # Still emit a report so the strict-section heading is visible
-        # even on an empty result.
-
-    # Render each gene.
-    gene_panels: list[tuple[Gene, bytes, dict]] = []
-    for symbol in plot_symbols:
-        gene = genes[symbol]
-        gene_vars = [
-            v for v in annotated
-            if v.chrom == gene.chrom and gene.start <= v.pos <= gene.end
-        ]
-        if not gene_vars:
-            print(f"{symbol}: 0 phased hets in {gene.chrom}:"
-                  f"{gene.start}-{gene.end}; no plot produced",
-                  file=sys.stderr)
-            empty_genes.append(symbol)
-            continue
-        blocks = _build_phase_blocks(gene_vars)
-        png, stats = render_compound_het_png(
-            gene, gene_vars, blocks, reference=args.reference,
-        )
-        gene_panels.append((gene, png, stats))
-
-    n_genes_plotted = len(gene_panels)
-    out_html = out_dir / f"{sample}.compound_het.report.html"
-    make_compound_het_report(
-        sample=sample,
-        gene_panels=gene_panels,
-        out_path=out_html,
-        reference=args.reference,
-        n_genes_scanned=n_genes_scanned,
-        n_genes_plotted=n_genes_plotted,
-        n_genes_capped=n_genes_capped,
-        clinvar_source=clinvar_source,
-        canonical_exons_source=exon_source,
-        refusal_counts=parse_summary,
-        selection_rule=selection_rule,
-        empty_genes=empty_genes,
-        strict_symbols=strict_set,
-        is_auto_select=not args.gene,
-    )
-    print(f"wrote {out_html}")
-    if args.png and gene_panels:
-        base = out_html.stem
-        for gene, png, _stats in gene_panels:
-            png_path = out_dir / f"{base}.{gene.symbol}.png"
-            png_path.write_bytes(png)
-            print(f"wrote {png_path}")
-    return 0
 
 
 def karyotype_main(args: argparse.Namespace) -> int:
@@ -5290,7 +4139,7 @@ def karyotype_main(args: argparse.Namespace) -> int:
 
     Activated when --mosdepth is given. When --vcf is also given, the
     VCF is consumed as the BAF source for the karyotype panel rather
-    than running through SV / compound-het header dispatch.
+    than running through SV header dispatch.
 
     Orchestration:
 
@@ -5519,9 +4368,11 @@ def main(argv: list[str] | None = None) -> int:
     Either ``--vcf`` or ``--mosdepth`` (or both) is required. When
     ``--mosdepth`` is set, karyotype coverage mode runs and any
     accompanying ``--vcf`` is consumed only as the BAF source.
-    Otherwise the plot mode is auto-detected from the VCF header
-    (SV vs. compound-het). molamola refuses cleanly rather than
-    rendering a misleading default.
+    Otherwise SV mode is selected from the VCF header. A phased,
+    VEP-annotated VCF is recognised and refused with a message naming
+    the removal of compound-het mode; anything else unrecognised is
+    refused too. molamola refuses cleanly rather than rendering a
+    misleading default.
     """
     args = build_argparser().parse_args(argv)
     if args.mosdepth is None and args.vcf is None:
@@ -5543,8 +4394,18 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, FileNotFoundError, OSError) as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
-    if mode == "compound-het":
-        return compound_het_main(args)
+    if mode == "compound-het-removed":
+        print(
+            "ERROR: this looks like a phased, VEP-annotated small-variant "
+            "VCF (##INFO=<ID=CSQ,...> + ##FORMAT=<ID=PS,...>).\n"
+            "       molamola's compound-het mode was removed after v0.5.1; "
+            "the tool now covers SV / cytogenetics reports and karyotype "
+            "coverage only.\n"
+            "       Install molamola==0.5.1 if you need the phased-haplotype "
+            "gene panels.",
+            file=sys.stderr,
+        )
+        return 1
     return plot_main(args)
 
 

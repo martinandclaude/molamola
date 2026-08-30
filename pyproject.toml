@@ -16,8 +16,8 @@ keywords = [
     "oxford-nanopore",
     "long-read",
     "structural-variants",
-    "compound-het",
-    "phasing",
+    "copy-number",
+    "karyotype",
     "vcf",
     "plotting",
     "cytogenetics",
@@ -61,12 +61,6 @@ dev = [
     "pytest>=7",
     "ruff>=0.4",
 ]
-# pyliftover is needed only by scripts/derive_canonical_exons.py for the
-# optional --lift-to <chain> mode. Not pulled by the runtime install.
-derive = [
-    "pyliftover>=0.4",
-]
-
 [tool.setuptools]
 packages = ["molamola"]
 
@@ -76,8 +70,6 @@ version = { attr = "molamola.__version__" }
 [tool.setuptools.package-data]
 molamola = [
     "data/*.txt.gz",
-    "data/*.tsv.gz",
-    "data/*.tsv.xz",
     "data/*.bed.gz",
     "data/*.png",
 ]

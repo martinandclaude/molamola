@@ -1,8 +1,0 @@
-##fileformat=VCFv4.2
-##INFO=<ID=CLNSIG,Number=.,Type=String,Description="ClinVar significance">
-##INFO=<ID=CLNHGVS,Number=.,Type=String,Description="ClinVar HGVS expression">
-#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
-1	1100	100	A	T	.	.	CLNSIG=Pathogenic;CLNHGVS=NM_001.1:c.10A>T
-1	1500	101	G	C	.	.	CLNSIG=Uncertain_significance;CLNHGVS=NM_001.1:c.50G>C
-1	2200	102	T	G	.	.	CLNSIG=Likely_benign;CLNHGVS=NM_001.1:c.130T>G
-1	5000	103	A	G	.	.	CLNSIG=Uncertain_significance;CLNHGVS=NM_002.1:c.10A>G

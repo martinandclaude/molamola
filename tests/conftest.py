@@ -35,6 +35,17 @@ def tiny_vcf() -> Path:
 
 
 @pytest.fixture(scope="session")
+def tiny_phased_vcf() -> Path:
+    """Minimal phased + VEP-annotated VCF.
+
+    Kept after compound-het mode was removed so the dispatch tests can
+    still assert that this header shape is recognised and refused with
+    a message naming the removal.
+    """
+    return TEST_DATA / "tiny_phased.vcf"
+
+
+@pytest.fixture(scope="session")
 def bundled_cytoband() -> Path:
     """The hg38 cytoBand.txt.gz shipped with the package."""
     return PACKAGE_DATA / "cytoBand.txt.gz"
