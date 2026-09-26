@@ -50,9 +50,11 @@ about:
     One input in, one self-contained HTML report out. molamola
     picks the visualiser from its input:
 
-    * VCF with ``##INFO=<ID=SVTYPE,...>``: a circos + linear
-      cytoband SV report (Sniffles2 / cuteSV / SVIM / pbsv /
-      NanoVar).
+    * VCF with ``##INFO=<ID=SVTYPE,...>``: an SV / cytogenetics
+      report (Sniffles2 / cuteSV / SVIM / pbsv / NanoVar) -- a
+      circos of rearrangements and SV density, and a
+      derivative-chromosome panel with breakpoint genes and
+      fusions for each candidate balanced rearrangement.
     * Mosdepth ``regions.bed.gz`` (via ``--mosdepth``): a
       karyotype coverage report -- genome-wide log2 relative
       depth, with an optional BAF panel beneath when paired with

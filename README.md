@@ -8,7 +8,7 @@
 
 A Python cytogenetics plotting tool for Oxford Nanopore data. **One input in, one self-contained HTML report out.** molamola picks between two report types based on its input:
 
-- a VCF with `##INFO=<ID=SVTYPE,...>` → SV / cytogenetics report (long-read SV VCFs from Sniffles2 / cuteSV / SVIM / pbsv / NanoVar);
+- a VCF with `##INFO=<ID=SVTYPE,...>` → SV / cytogenetics report (long-read SV VCFs from Sniffles2 / cuteSV / SVIM / pbsv / NanoVar): a circos of rearrangements and SV density, and a derivative-chromosome panel for each candidate balanced rearrangement — translocations, inversions, insertions — with breakpoint bands, genes and fusions (`t(8;21)(q21.3;q22.12)  RUNX1::RUNX1T1`);
 - a mosdepth `regions.bed.gz` (via `--mosdepth`) → karyotype coverage report (genome-wide log2 relative-depth scatter + rolling-median smooth, with an optional BAF panel beneath when paired with a small-variant VCF — haplotype-resolved if that VCF is phased).
 
 Figures embedded as base64 PNGs — no external assets, opens offline.
@@ -55,6 +55,8 @@ molamola --mosdepth sample.regions.bed.gz --vcf sample.phased.vcf.gz \
 Either `--vcf` or `--mosdepth` is required; `--out <directory>` is required too (molamola refuses rather than silently writing the report next to the input file). With `--vcf`, SV mode is selected from the VCF header (`##INFO=<ID=SVTYPE>`); anything else is refused rather than plotted on a guess. With `--mosdepth`, karyotype coverage mode runs and any accompanying `--vcf` is used as the BAF source. Karyotype mode expects uniform-bin mosdepth runs (`mosdepth --by <int>`).
 
 See the [docs](https://martinandclaude.github.io/molamola/) for example output, the full CLI reference, filter explanations, and worked examples.
+
+> **Upgrading from 0.6:** the SV report's linear genome map is gone, so `--png` no longer writes `<sample>.report.sv_map.png`; it writes the circos and one `<sample>.report.rearrangement_<n>.png` per candidate panel instead. VAF classes are now named by range (0-33 / 33-66 / 66-100 %) and drawn blue / orange / near-black. See the [CHANGELOG](CHANGELOG.md) for the rest.
 
 > **Compound-het mode was removed after v0.5.1.** The per-gene phased-haplotype panels for recessive-disease workup, and the bundled ClinVar and MANE Select references they needed, are gone; molamola is now a cytogenetics tool only. Install `molamola==0.5.1` if you need them.
 

@@ -10,7 +10,10 @@ auto-detected from the VCF header, karyotype mode is selected by
 the `--mosdepth` flag:
 
 - **SV / cytogenetics report** for long-read SV VCFs
-  (Sniffles2, cuteSV, SVIM, pbsv, NanoVar).
+  (Sniffles2, cuteSV, SVIM, pbsv, NanoVar): a circos of
+  rearrangements and SV density, and a derivative-chromosome panel for
+  each candidate balanced rearrangement, with breakpoint bands, genes
+  and fusions.
 - **Karyotype coverage report** for a mosdepth `regions.bed.gz`
   (via `--mosdepth`) — genome-wide log2 relative-depth scatter + rolling-median
   smooth, with an optional BAF panel beneath when paired with a
@@ -99,6 +102,11 @@ Bundled-only by design: molamola does not auto-download or look up
 online. The bundled refs are reproducibly regeneratable from public
 sources via `scripts/derive_karyotype_refs.py` and
 `scripts/derive_gene_tables.py` in the repo.
+
+> **Upgrading from 0.6:** the SV report's linear genome map is gone,
+> so `--png` no longer writes `<sample>.report.sv_map.png`; it writes
+> the circos and one `<sample>.report.rearrangement_<n>.png` per
+> candidate panel instead.
 
 > **Compound-het mode was removed after v0.5.1.** The per-gene
 > phased-haplotype panels for recessive-disease workup, and the

@@ -3,7 +3,11 @@
 All notable changes to molamola are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.7.0] — 2026-09-26
+
+Balanced events for AML / ALL cytogenetics. Depth-based karyotypes cannot see a balanced translocation or inversion; this release pairs BND junctions into rearrangements, draws them by how much they deserve attention, and gives each candidate a derivative-chromosome panel with its genes and fusion.
+
+**Upgrading from 0.6** — breaking for `--png` users: the linear genome map is gone, so `<sample>.report.sv_map.png` is no longer written; `--png` writes the circos and one `<sample>.report.rearrangement_<n>.png` per candidate panel. VAF classes are renamed by range and recoloured. `summarize_bnds.sh` is removed from the repository. The command line is otherwise unchanged apart from the new `--only-sv-chroms`.
 
 ### Added
 

@@ -4,9 +4,11 @@
 One input in, one self-contained HTML out. molamola is a cytogenetics
 visualiser for long-read data and ships two report types:
 
-- **SV / cytogenetics report** — a circos plot: cytoband ideogram,
-  per-type SV density rings (INS / DEL / DUP / INV) and BND arcs.
-  Selected when the VCF carries
+- **SV / cytogenetics report** — a circos plot (cytoband ideogram,
+  per-type SV density rings, rearrangement arcs by tier) and a
+  derivative-chromosome panel for each candidate balanced
+  rearrangement, with gene and fusion labels. Selected when the VCF
+  carries
   ``##INFO=<ID=SVTYPE,...>`` (Sniffles2 / cuteSV / SVIM / pbsv /
   NanoVar). Supports hg38 and T2T-CHM13v2.0 via bundled cytobands.
 
@@ -38,7 +40,7 @@ error rather than silently producing a default plot.
 
 from __future__ import annotations
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 import argparse
 import base64
