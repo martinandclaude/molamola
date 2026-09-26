@@ -527,8 +527,6 @@ class SV:
         return max(vals) if vals else 0.0
 
 
-
-
 _BND_ALT_RE = re.compile(
     r"^(?P<pre>[A-Za-z.*]*)"
     r"(?P<bracket>[\[\]])"
@@ -1290,37 +1288,6 @@ def deduplicate_reciprocal(bnds: list[BND]) -> list[BND]:
     for b in bnds:
         seen.setdefault(b.canonical_key, b)
     return list(seen.values())
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def parse_focus(s: str) -> tuple[str, int]:
@@ -2163,7 +2130,6 @@ def _kary_format_bin_size(bp: float) -> str:
     return f"{bp:.0f} bp"
 
 
-
 def _kary_attach_xpos(df: pd.DataFrame, pos_col: str,
                       offsets: dict[str, int]) -> pd.DataFrame:
     """Add a genome-wide ``xpos`` column = ``pos_col + offset[chrom]``."""
@@ -2178,7 +2144,7 @@ def _kary_attach_xpos(df: pd.DataFrame, pos_col: str,
 def render_karyotype_genome_png(
     cov: pd.DataFrame, cb: pd.DataFrame, lengths: dict[str, int],
     baf_df: pd.DataFrame | None, sex: str, bin_size: int,
-    args: argparse.Namespace, *, is_adaptive: bool = False,
+    args: argparse.Namespace,
 ) -> tuple[bytes, str]:
     """Render the genome-wide karyotype figure to PNG bytes.
 
@@ -2187,13 +2153,10 @@ def render_karyotype_genome_png(
     (rolling-median per chrom) columns; :func:`karyotype_main`
     prepares those before calling.
 
-    ``is_adaptive`` flags the depth profile as adaptive-sampling-like
-    and adds an "AS suspected" chip to the metadata strip.
-
     Returns ``(png_bytes, scatter_bin_label)``. The scatter-bin label
-    (e.g. ``"50 kb"``) is also stamped onto the figure's metadata
-    strip — returning it lets the HTML report reuse the same string
-    without re-deriving the aggregation factor.
+    (e.g. ``"50 kb"``) is returned so the HTML report's run-metadata
+    block can quote the same string without re-deriving the
+    aggregation factor.
     """
     offsets = cum_offsets(lengths)
     cov_xy = _kary_attach_xpos(cov, "start", offsets)
@@ -2576,16 +2539,6 @@ def noise_breakdown(bnds: list[BND]) -> dict:
     }
 
 
-def title_suffix(bd: dict) -> str:
-    """One-line BND noise breakdown for figure titles."""
-    return (
-        f"{bd['n']} BNDs: "
-        f"clean={bd['clean']}, "
-        f"acrocentric={bd['acrocentric']}, "
-        f"cov-anomaly={bd['cov_anomaly']}"
-    )
-
-
 # ---------------------------------------------------------------------------
 # Shared rendering helpers
 # ---------------------------------------------------------------------------
@@ -2953,10 +2906,6 @@ def plot_circos(
     cytoband_path: Path,
     out_path: Path,
     sample: str,
-    n_total: int,
-    n_pass: int,
-    filter_label: str,
-    breakdown: dict,
     plot_vaf: bool = False,
     *,
     bin_size: int = 1_000_000,
@@ -2981,13 +2930,8 @@ def plot_circos(
     out_path : Path
         PNG output path.
     sample : str
-        Sample label used as a temp-file prefix and in the title.
-    n_total, n_pass : int
-        Total and PASS-count of BND records (for the title).
-    filter_label : str
-        ``"pass"`` or ``"all"``, displayed in the title.
-    breakdown : dict
-        Output of :func:`noise_breakdown`.
+        Sample label, used as the prefix for the temp files pyCirclize
+        insists on reading from disk.
     plot_vaf : bool, optional
         Annotate each drawn arc with its VAF as a percentage, placed
         at the arc's first endpoint just inside the cytoband ring.
@@ -3245,19 +3189,13 @@ def _draw_bnd_arcs(
 def _add_genome_map_decor(
     fig,
     ax,
-    sample: str,
-    breakdown: dict,
     n_svs_by_type: dict[str, int],
-    n_total: int,
-    n_pass: int,
-    filter_label: str,
     bin_size: int,
-    min_svlen: int,
     max_len: int,
     n_chr: int,
     row_h: float,
 ) -> None:
-    """Apply axes formatting, title, legends, and colorbar to the genome map."""
+    """Apply axes formatting, legends, and colorbar to the genome map."""
     top_y = n_chr * row_h + 4.0
     ax.set_xlim(-max_len * 0.06, max_len * 1.02)
     ax.set_ylim(-0.4, top_y)
@@ -3311,14 +3249,8 @@ def plot_genome_sv_map(
     contigs: dict[str, int],
     cytobands: dict,
     out_path: Path,
-    sample: str,
-    n_total: int,
-    n_pass: int,
-    filter_label: str,
-    breakdown: dict,
     *,
     bin_size: int = 1_000_000,
-    min_svlen: int = 50,
 ) -> None:
     """Render the genome SV map (cytobands + density strips + BND arcs).
 
@@ -3335,19 +3267,8 @@ def plot_genome_sv_map(
         Loaded by :func:`load_cytobands`.
     out_path : Path
         PNG output path.
-    sample : str
-        Sample label for the title.
-    n_total, n_pass : int
-        Total and PASS counts for BNDs (for the title).
-    filter_label : str
-        ``"pass"`` or ``"all"``.
-    breakdown : dict
-        Output of :func:`noise_breakdown`.
     bin_size : int, optional
         Density-track bin width in bp (default 1,000,000).
-    min_svlen : int, optional
-        The current `--min-svlen` value; used in the figure title for
-        annotation only (the actual filtering is applied upstream).
     """
     chroms_present, svs_filt, bins_cache, type_anchor = _sv_density(
         svs, contigs, bin_size,
@@ -3378,9 +3299,7 @@ def plot_genome_sv_map(
 
     n_svs_by_type = {t: sum(1 for s in svs_filt if s.svtype == t) for t in SV_TYPES}
     _add_genome_map_decor(
-        fig, ax, sample, breakdown, n_svs_by_type,
-        n_total, n_pass, filter_label,
-        bin_size, min_svlen, max_len, n, row_h,
+        fig, ax, n_svs_by_type, bin_size, max_len, n, row_h,
     )
 
     # The two legends sit BELOW the axes via bbox_to_anchor; tight-cropping
@@ -3405,11 +3324,6 @@ _BUILD_LABEL: dict[str, str] = {
     "hg38": "GRCh38",
     "t2t":  "T2T-CHM13v2",
 }
-
-
-
-
-
 
 
 def _esc(s) -> str:
@@ -3623,8 +3537,6 @@ def make_karyotype_report(
     out_path.write_text(html)
 
 
-
-
 def _header_svg() -> str:
     """Build the inline header SVG, embedding the bundled fish PNG."""
     fish_path = Path(__file__).resolve().parent / "data" / "header_fish.png"
@@ -3759,8 +3671,6 @@ def _add_sv_args(p) -> None:
              "the fingerprint detector; falls back to sniffles2 on "
              "no match. Set explicitly to override.",
     )
-
-
 
 
 def _add_karyotype_args(p) -> None:
@@ -3909,7 +3819,7 @@ def plot_main(args: argparse.Namespace) -> int:
             print(f"ERROR: {msg}. Use --force to override.", file=sys.stderr)
             return 2
 
-    out_dir = args.out if args.out is not None else args.vcf.resolve().parent
+    out_dir = args.out
     out_dir.mkdir(parents=True, exist_ok=True)
     sample = args.sample or args.vcf.name.replace(".vcf.gz", "").replace(".vcf", "")
 
@@ -4094,12 +4004,11 @@ def plot_main(args: argparse.Namespace) -> int:
     # Render both figures into in-memory PNG buffers — no temp files.
     circos_buf = io.BytesIO()
     plot_circos(unique_bnds, svs, contigs, cytoband_file,
-                circos_buf, sample, n_total, n_pass, args.filter, bd,
+                circos_buf, sample,
                 plot_vaf=args.plotvaf, bin_size=args.bin_size)
     sv_map_buf = io.BytesIO()
     plot_genome_sv_map(unique_bnds, svs, contigs, cytobands,
-                        sv_map_buf, sample, n_total, n_pass, args.filter, bd,
-                        bin_size=args.bin_size, min_svlen=args.min_svlen)
+                        sv_map_buf, bin_size=args.bin_size)
 
     out_html = out_dir / f"{sample}{focus_tag}.report.html"
     make_html_report(
@@ -4128,8 +4037,6 @@ def plot_main(args: argparse.Namespace) -> int:
         print(f"wrote {circos_path}")
         print(f"wrote {sv_map_path}")
     return 0
-
-
 
 
 def karyotype_main(args: argparse.Namespace) -> int:
@@ -4167,8 +4074,7 @@ def karyotype_main(args: argparse.Namespace) -> int:
             print(f"ERROR: {msg}. Use --force to override.", file=sys.stderr)
             return 2
 
-    out_dir = (args.out if args.out is not None
-               else args.mosdepth.resolve().parent)
+    out_dir = args.out
     out_dir.mkdir(parents=True, exist_ok=True)
 
     sample = args.sample or (
@@ -4329,7 +4235,6 @@ def karyotype_main(args: argparse.Namespace) -> int:
     print("rendering genome-wide figure")
     genome_png, scatter_bin_label = render_karyotype_genome_png(
         cov2, cb, lengths, baf_df, sex, bin_size, args,
-        is_adaptive=is_adaptive,
     )
 
     out_html = out_dir / f"{sample}.karyotype.report.html"

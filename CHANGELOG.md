@@ -8,6 +8,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ### Changed
 
 - **The SV density legends no longer print a "peak N" per type.** The number was the busiest single 1 Mb bin, and it was the top of the colour scale until v0.6.0 moved the alpha ramp to a 99th-percentile anchor. After that it sat directly beside a legend title saying the scale saturates somewhere else — for INS on a typical genome, `peak 67` next to a scale that in fact saturates at 35, with ~1 % of bins clipping. A number that contradicts the title it sits under is worse than no number, and the peak was not otherwise helping a reader decode the ink. Entries now carry the per-type event count only, on both the circos rings and the linear map's strips. `type_peak` is no longer computed or threaded through the plotting chain.
+- **`docs/EXAMPLES.md`: the "heavier smoothing" karyotype example now actually smooths more.** It passed `--smooth-window-mb 1.0`, which became *lighter* than the default when that moved to 10 Mb, and `--ymax 4`, a linear-CN value that means CN 32 on the log2 axis introduced in v0.5.0. It now passes `--smooth-window-mb 20` and leaves the axis at its default.
+
+### Removed
+
+- **`summarize_bnds.sh`**, the bcftools BND audit script at the repository root, and with it the samtools / bcftools / htslib / tabix entries in `environment.yml` that existed only for it. It was never part of the installed package.
 
 ## [0.6.0] — 2026-08-30
 

@@ -124,8 +124,6 @@ def test_render_genome_does_not_leak_rcparams(tiny_regions, tiny_cytoband):
     assert before == after
 
 
-
-
 def test_kary_attach_xpos_aligns_with_offsets():
     df = pd.DataFrame({"chrom": ["chr1", "chr2"], "start": [100, 200]})
     offsets = {"chr1": 0, "chr2": 1_000_000}

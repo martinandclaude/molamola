@@ -124,15 +124,7 @@ Useful as a diagnostic when you want to see the raw coverage shape without molam
 
 ```sh
 molamola --mosdepth sample.regions.bed.gz --reference hg38 --out reports/ \
-    --smooth-window-mb 1.0 --scatter-bin-kb 100 --ymax 4
+    --smooth-window-mb 20 --scatter-bin-kb 100
 ```
 
 If the run-metadata shows an **"AS suspected"** chip, the sample looks like adaptive sampling and the CN scale is biased (anchored on the off-target background) — interpret the depth axis with care.
-
-## Verify a VCF before plotting
-
-```sh
-./summarize_bnds.sh path/to/sample.sniffles.vcf
-```
-
-Reports SV-type counts, BND filter distribution, intra/inter-chromosomal split, and the top 10 BND chromosome pairs.

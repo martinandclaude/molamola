@@ -4,9 +4,7 @@
 #   pip install molamola
 #   conda create -n molamola -c bioconda -c conda-forge molamola
 #
-# This file is for contributors who want everything (runtime deps,
-# test deps, lint, plus the SAM/BCF/htslib trio that any realistic
-# Sniffles pre-processing workflow leans on).
+# This file is for contributors: runtime deps plus test and lint tools.
 #
 # Create:
 #   conda env create -f environment.yml
@@ -32,7 +30,3 @@ dependencies:
   - pycirclize>=1.10
   - pytest>=7
   - ruff>=0.4
-  - samtools>=1.17
-  - bcftools>=1.17
-  - htslib>=1.17
-  - tabix

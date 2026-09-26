@@ -309,8 +309,7 @@ def test_disk_margin_clears_the_plotvaf_sector_names():
 def _render(bnds, svs, contigs, cytoband_path, **kwargs):
     buf = io.BytesIO()
     mm.plot_circos(
-        bnds, svs, contigs, cytoband_path, buf, "SAMPLE",
-        len(bnds), len(bnds), "pass", mm.noise_breakdown(bnds), **kwargs,
+        bnds, svs, contigs, cytoband_path, buf, "SAMPLE", **kwargs,
     )
     return buf.getvalue()
 
