@@ -146,29 +146,34 @@ SV_COV_FILTER_TYPES: tuple[str, ...] = ("DEL", "DUP")
 #: low-blast sample as mosaic.
 VAF_CLASS_EDGES: tuple[float, ...] = (0.0, 0.33, 0.66, 1.0)
 
-#: One colour per class, low to high. Chosen under simulated
-#: colour-vision deficiency (Machado et al. 2009) rather than by eye,
-#: and evaluated on the colours **as drawn** -- arcs render at alpha
-#: 0.70 over :data:`PAPER_BG`, which lifts every colour toward the page
-#: and costs roughly a third of the nominal contrast. Judging the raw
-#: hex values instead is how a palette ends up looking fine in a swatch
-#: and washed out on the plot.
+#: One colour per class, low to high: blue, burnt orange, near-black.
+#: Chosen under simulated colour-vision deficiency (Machado et al. 2009)
+#: rather than by eye, and evaluated on the colours **as drawn** -- arcs
+#: that must be read (candidates and pairs in repeats) render at alpha
+#: 0.90 over :data:`PAPER_BG`, which lifts every colour toward the page.
+#: Judging the raw hex values instead is how a palette ends up looking
+#: fine in a swatch and washed out on the plot.
 #:
 #: Constraints, all binding on the blended colour:
 #:
-#: 1. every class clears 3:1 contrast against the page;
-#: 2. classes stay apart under normal, protan, deutan and tritan vision
-#:    (worst case dE 37.2, up from 11.3). The previous palette put het
-#:    and hom at nearly the same lightness, so they differed almost only
-#:    in hue and merged under tritanopia;
-#: 3. no class lands on :data:`NOISE_COLOR` (worst case dE 35.0).
+#: 1. every class clears 3:1 contrast against the page (the blue, at
+#:    3.03:1, is the binding one);
+#: 2. classes stay apart under normal, protan, deutan and tritan vision:
+#:    worst case dE 61.6 (70.6 / 61.6 / 67.6 / 63.3), up from 36.3;
+#: 3. no class lands on :data:`NOISE_COLOR` (worst case dE 45.8).
 #:
-#: Lightness also decreases monotonically with VAF, so the ordering
-#: survives even a total loss of hue discrimination.
+#: Lightness decreases with VAF (L 56 / 48 / 2), so the ordering survives
+#: a total loss of hue discrimination and the fullest events are the
+#: darkest. Replaced 2026-09-26: the previous blue / purple / brown met
+#: the same constraints but sat at L 44 / 36 / 26, so on a thin arc its
+#: two upper classes read as the same dark line. Blue against orange is
+#: the axis Okabe-Ito and other colour-blind-safe palettes are built on.
+#: Meeting 3:1 with a lighter first class is what needs the 0.90 alpha;
+#: at 0.70 the blue drops to 2.4:1.
 VAF_CLASS_COLORS: tuple[str, ...] = (
-    "#035AF3",  # 0 - 33 %
-    "#634980",  # 33 - 66 %
-    "#781B00",  # 66 - 100 %
+    "#0689ED",  # 0 - 33 %
+    "#BC5301",  # 33 - 66 %
+    "#130303",  # 66 - 100 %
 )
 
 #: Class names, in the same order as :data:`VAF_CLASS_COLORS`: the VAF
@@ -293,8 +298,9 @@ CIRCOS_SV_RING_GAP: float = 0.6
 
 #: How much wider than tall the circos figure is drawn. The disk keeps
 #: the leftmost ``1 / CIRCOS_FIG_WIDEN`` of the width - i.e. it stays
-#: square - and the remainder is the legend and colorbar column.
-CIRCOS_FIG_WIDEN: float = 1.30
+#: square - and the remainder is the key column: ring and arc keys side
+#: by side, the VAF bar, and the candidate list.
+CIRCOS_FIG_WIDEN: float = 1.50
 
 #: Blank margin left around the circos disk, as a fraction of figure
 #: height. Not cosmetic: the disk axes only spans r=105, while sector
@@ -3191,7 +3197,7 @@ def _style_vaf_colorbar(cb) -> None:
     """
     cb.set_ticks(list(VAF_CLASS_EDGES))
     cb.set_ticklabels([f"{round(e * 100)} %" for e in VAF_CLASS_EDGES])
-    cb.ax.tick_params(labelsize=8)
+    cb.ax.tick_params(labelsize=7.5)
 
 
 def _bin_sv_counts(
@@ -3319,15 +3325,16 @@ def sv_density_alpha(counts, anchor: float, svtype: str | None = None):
 # ---------------------------------------------------------------------------
 
 #: Arc styling per rearrangement tier, as ``(alpha, width factor)``.
-#: The repeat tier keeps alpha 0.70 on purpose: that is the regime the
-#: VAF colours were validated in under simulated colour-vision
-#: deficiency (``tests/test_vaf_colors.py``), and a real fusion the mask
-#: rule demotes lands in this tier, so it must stay as readable as every
-#: arc used to be. Candidates go darker and wider; single junctions -
-#: ~90 % of a normal genome's arcs - recede into background.
+#: Candidates and pairs in repeats share alpha 0.90 on purpose: that is
+#: the regime the VAF colours are validated in under simulated
+#: colour-vision deficiency (``tests/test_vaf_colors.py``), and a real
+#: fusion the mask rule demotes lands in the repeat tier, so it must stay
+#: as readable as a candidate. Candidates are told apart by width and by
+#: being drawn on top; single junctions - ~90 % of a normal genome's
+#: arcs - recede into background.
 ARC_TIER_STYLE: dict[str, tuple[float, float]] = {
     "candidate": (0.90, 2.6),
-    "repeat": (0.70, 1.0),
+    "repeat": (0.90, 1.0),
     "single": (0.30, 0.8),
 }
 
@@ -3345,7 +3352,7 @@ NON_PASS_ALPHA_FACTOR: float = 0.5
 CIRCOS_ARC_PAD: int = 250_000
 
 #: Candidates named beside the disc; any beyond this are counted.
-CIRCOS_MAX_NAMED_CANDIDATES: int = 10
+CIRCOS_MAX_NAMED_CANDIDATES: int = 25
 
 #: Radii for the numbered badges marking candidate breakpoints, starting
 #: just inside the ring stack where arcs start. A badge that would sit
@@ -3610,6 +3617,13 @@ def _draw_sv_density_rings(
     return n_drawn
 
 
+def _fig_bbox(fig, artist):
+    """An artist's rendered extent in figure-fraction coordinates."""
+    renderer = fig.canvas.get_renderer()
+    return artist.get_window_extent(renderer).transformed(
+        fig.transFigure.inverted())
+
+
 def _add_circos_legends(
     fig,
     n_svs_by_type: dict[str, int],
@@ -3618,25 +3632,25 @@ def _add_circos_legends(
     any_non_pass: bool,
     candidates: list[tuple[int, str]] | None = None,
 ) -> list:
-    """Attach the circos keys: rings, arcs, candidates, cytobands.
+    """Attach the circos keys in the column right of the disc.
 
-    The circos is the only SV figure, so it explains its own ink. Four
-    keys stack in the right-hand column, with the VAF colorbar between
-    the candidate list and the cytoband key:
+    Laid out top to bottom, each placed against the measured extent of
+    the one above so nothing overlaps whatever the text widths:
 
-    - **rings**: which ring is which type, with its per-type event
-      count. No number for the alpha scale - the ramp saturates at the
-      99th-percentile bin, which the title says, and printing the
-      busiest bin beside that invited readers to take the wrong number
-      as the top of the scale.
-    - **arcs**: the three rearrangement tiers, plus non-PASS when any
-      are drawn, and noise-flagged. Samples are solid because the arcs
-      are: pyCirclize draws filled ribbons, which cannot show a dash.
-    - **candidates**: numbered to match the badges on the disc, named
-      by :func:`rearrangement_label`. Always present - "none" is an
+    - **rings** and **arcs** side by side. Rings: which ring is which
+      type, with per-type event counts; no number for the alpha scale -
+      the ramp saturates at the 99th-percentile bin, which the title
+      says, and printing the busiest bin beside that invited readers to
+      take the wrong number as the top of the scale. Arcs: the three
+      tiers, non-PASS when any are drawn, and noise-flagged; samples are
+      solid because pyCirclize draws filled ribbons, which cannot dash.
+    - a small horizontal **VAF** bar spanning both.
+    - **candidates**, numbered to match the badges on the disc, with the
+      rest of the column to grow into. Always present - "none" is an
       answer a cytogeneticist wants stated, not implied by absence.
-    - **cytobands**: the greyscale ramp with the circos's red
-      centromere.
+
+    There is no cytoband key: the greyscale is the ISCN convention the
+    readers already know, and the column is better spent on candidates.
 
     Returns the legend artists, which ``bbox_inches="tight"`` needs
     listed explicitly or it can crop entries outside the axes.
@@ -3647,6 +3661,7 @@ def _add_circos_legends(
     style = dict(frameon=True, framealpha=0.9, edgecolor="#CCCCCC",
                  facecolor=PAPER_BG, fontsize=7.5, title_fontsize=7.5,
                  alignment="left", loc="upper left")
+    x0, top, gap = 1.0 / CIRCOS_FIG_WIDEN + 0.01, 0.95, 0.012
 
     ring_handles = [
         mpatches.Patch(
@@ -3656,9 +3671,9 @@ def _add_circos_legends(
         for t in CIRCOS_SV_RING_ORDER
     ]
     rings = fig.legend(
-        handles=ring_handles, bbox_to_anchor=(0.78, 0.94),
-        title=f"SV density rings, outer to inner\n(alpha saturates at the "
-              f"99th-percentile {bin_label} bin)",
+        handles=ring_handles, bbox_to_anchor=(x0, top),
+        title=f"SV density rings, outer to inner\nalpha saturates at the\n"
+              f"99th-percentile {bin_label} bin",
         **style,
     )
 
@@ -3667,8 +3682,8 @@ def _add_circos_legends(
         plt.Line2D([0], [0], color=sample, alpha=ARC_TIER_STYLE[tier][0],
                    linewidth=1.2 * ARC_TIER_STYLE[tier][1], label=label)
         for tier, label in (
-            ("candidate", "candidate: both junctions found"),
-            ("repeat", "paired, but in repeats"),
+            ("candidate", "candidate: both junctions"),
+            ("repeat", "paired, in repeats"),
             ("single", "single junction"),
         )
     ]
@@ -3680,10 +3695,21 @@ def _add_circos_legends(
     arc_handles.append(plt.Line2D(
         [0], [0], color=NOISE_COLOR, linewidth=1.2, alpha=0.5,
         label="noise-flagged"))
+    rb = _fig_bbox(fig, rings)
     arcs = fig.legend(
-        handles=arc_handles, bbox_to_anchor=(0.78, 0.765),
-        title="BND arcs (colour = VAF, width = read support)", **style,
+        handles=arc_handles, bbox_to_anchor=(rb.x1 + gap, top),
+        title="BND arcs\ncolour = VAF\nwidth = read support", **style,
     )
+
+    ab = _fig_bbox(fig, arcs)
+    bar_w = min(0.6 * (ab.x1 - x0), 0.20)
+    bar_h = 0.013
+    bar_y = min(rb.y0, ab.y0) - 0.045 - bar_h
+    cax = fig.add_axes([x0 + 0.005, bar_y, bar_w - 0.01, bar_h])
+    sm = plt.cm.ScalarMappable(cmap=VAF_CMAP, norm=VAF_NORM)
+    cb = fig.colorbar(sm, cax=cax, orientation="horizontal")
+    _style_vaf_colorbar(cb)
+    cax.set_title("VAF", fontsize=7.5, loc="left", pad=3)
 
     named = list(candidates or [])
     shown = named[:CIRCOS_MAX_NAMED_CANDIDATES]
@@ -3697,20 +3723,10 @@ def _add_circos_legends(
     cand = fig.legend(
         handles=[plt.Line2D([], [], linestyle="none") for _ in cand_labels],
         labels=cand_labels, handlelength=0, handletextpad=0,
-        bbox_to_anchor=(0.78, 0.585),
+        bbox_to_anchor=(x0, bar_y - 0.05),
         title="candidate rearrangements", **style,
     )
-
-    cyto_handles = [
-        mpatches.Patch(facecolor=CIRCOS_CYTOBAND_COLORS[st],
-                       edgecolor="#555555", linewidth=0.5, label=st)
-        for st in ("gneg", "gpos50", "gpos100", "acen", "gvar")
-    ]
-    cyto = fig.legend(
-        handles=cyto_handles, bbox_to_anchor=(0.78, 0.17),
-        title="cytobands", ncols=3, **style,
-    )
-    return [rings, arcs, cand, cyto]
+    return [rings, arcs, cand]
 
 
 def plot_circos(
@@ -3902,11 +3918,6 @@ def plot_circos(
         m / CIRCOS_FIG_WIDEN, m,
         (1.0 - 2 * m) / CIRCOS_FIG_WIDEN, 1.0 - 2 * m,
     ])
-
-    cax = fig.add_axes([0.795, 0.20, 0.016, 0.20])
-    sm = plt.cm.ScalarMappable(cmap=VAF_CMAP, norm=VAF_NORM)
-    cb = fig.colorbar(sm, cax=cax, label="VAF")
-    _style_vaf_colorbar(cb)
 
     legends = _add_circos_legends(
         fig, n_svs_by_type, bin_size,

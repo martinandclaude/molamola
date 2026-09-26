@@ -89,14 +89,15 @@ def _arc(**kw):
 def test_tiers_rank_by_emphasis():
     alpha = {t: mm._arc_style(_arc(tier=t))[1] for t in mm.ARC_TIER_STYLE}
     width = {t: mm._arc_style(_arc(tier=t))[2] for t in mm.ARC_TIER_STYLE}
-    assert alpha["candidate"] > alpha["repeat"] > alpha["single"]
+    assert alpha["candidate"] >= alpha["repeat"] > alpha["single"]
     assert width["candidate"] > width["repeat"] > width["single"]
 
 
-def test_repeat_tier_keeps_the_alpha_the_palette_was_validated_at():
-    """A real fusion demoted by the mask rule is drawn in this tier; it
-    must stay as readable as every arc was before tiers existed."""
-    assert mm.ARC_TIER_STYLE["repeat"][0] == 0.70
+def test_repeat_tier_is_as_readable_as_a_candidate():
+    """A real fusion demoted by the mask rule is drawn in this tier, and
+    the VAF palette's 3:1 contrast holds only at the candidates' alpha -
+    so the two share it and differ by width."""
+    assert mm.ARC_TIER_STYLE["repeat"][0] == mm.ARC_TIER_STYLE["candidate"][0]
 
 
 def test_noise_flag_greys_an_arc_whatever_its_tier():

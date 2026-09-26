@@ -257,32 +257,57 @@ def _legend_texts(legends):
     return [[t.get_text() for t in lg.get_texts()] for lg in legends]
 
 
-def test_circos_keys_its_own_arcs_and_cytobands():
-    """With the linear map gone, the circos has to explain the noise-arc
-    style and the cytoband greys itself."""
+def test_circos_keys_its_own_arcs():
+    """With the linear map gone, the circos explains its own arc styles.
+    It carries no cytoband key: the greyscale is the ISCN convention its
+    readers know, and the column is spent on the candidate list."""
     import matplotlib.pyplot as plt
     fig = plt.figure()
     try:
-        rings, arcs, cand, cyto = mm._add_circos_legends(
+        legends = mm._add_circos_legends(
             fig, {"INS": 3, "DEL": 2, "DUP": 1, "INV": 0}, 1_000_000,
             any_non_pass=False,
         )
-        texts = _legend_texts([rings, arcs, cand, cyto])
+        texts = _legend_texts(legends)
     finally:
         plt.close(fig)
+    assert len(legends) == 3
     assert texts[0] == ["INS  3", "DEL  2", "DUP  1", "INV  0"]
-    assert texts[1] == ["candidate: both junctions found",
-                        "paired, but in repeats", "single junction",
-                        "noise-flagged"]
+    assert texts[1] == ["candidate: both junctions", "paired, in repeats",
+                        "single junction", "noise-flagged"]
     assert texts[2] == ["none"]
-    assert "acen" in texts[3] and "gneg" in texts[3]
+    assert not any("acen" in t for tt in texts for t in tt)
+
+
+def test_keys_are_laid_out_without_overlap():
+    """Ring and arc keys side by side, the VAF bar below both, the
+    candidate list below the bar - placed from measured extents, so long
+    names cannot push one key onto another."""
+    import matplotlib.pyplot as plt
+    fig = plt.figure(figsize=(12, 8))
+    try:
+        rings, arcs, cand = mm._add_circos_legends(
+            fig, {"INS": 13_383, "DEL": 9_902, "DUP": 54, "INV": 73},
+            1_000_000, any_non_pass=True,
+            candidates=[(n, f"t(8;21)(q21.3;q22.12)  RUNX1::RUNX1T1 #{n}")
+                        for n in range(1, 21)],
+        )
+        rb, ab, cb = (mm._fig_bbox(fig, x) for x in (rings, arcs, cand))
+        bar = fig.axes[-1].get_position()
+    finally:
+        plt.close(fig)
+    assert ab.x0 > rb.x1                      # side by side
+    assert abs(ab.y1 - rb.y1) < 1e-6          # top-aligned
+    assert bar.y1 < min(rb.y0, ab.y0)         # bar below both
+    assert bar.width < (ab.x1 - rb.x0)        # smaller than the two keys
+    assert cb.y1 < bar.y0                     # candidates below the bar
 
 
 def test_non_pass_key_appears_only_when_non_pass_arcs_are_drawn():
     import matplotlib.pyplot as plt
     fig = plt.figure()
     try:
-        _, arcs, _, _ = mm._add_circos_legends(
+        _, arcs, _ = mm._add_circos_legends(
             fig, {}, 1_000_000, any_non_pass=True,
         )
         assert "non-PASS (fainter)" in [t.get_text() for t in arcs.get_texts()]
