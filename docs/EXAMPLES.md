@@ -20,6 +20,23 @@ open reports/sample.karyotype.report.html       # karyotype mode
 molamola --vcf sample.sniffles.vcf --out reports/
 ```
 
+The run lists the candidate rearrangements on stdout, numbered as on the circos:
+
+```text
+Rearrangements: 1 candidate (1 translocation), 10 paired in repeats, 83 single junctions
+  candidate 1: t(8;21)(q21.3;q22.12)  RUNX1::RUNX1T1
+```
+
+Each candidate gets a derivative-chromosome panel below the circos in the report. Add `--png` to also write them as `<sample>.report.rearrangement_<n>.png`. See [Rearrangement tiers](FILTERS.md#rearrangement-tiers-sv-mode) for how candidates are chosen. On a normal Sniffles2 genome, expect a handful of large inversion calls here; these are common polymorphisms or recurrent caller artefacts.
+
+### Targeted or adaptive-sampling run
+
+```sh
+molamola --vcf sample.sniffles.vcf --only-sv-chroms --out reports/
+```
+
+Draws only the chromosomes that carry a rearrangement, so the disc isn't spent on chromosomes with nothing to show.
+
 ### T2T-CHM13v2.0 reference
 
 ```sh
@@ -35,7 +52,7 @@ molamola --vcf sample.sniffles.vcf --out reports/ \
     --focus chr7:57716411 --focus-window 10000
 ```
 
-Output filenames get a `.focus_<chr>_<pos>` tag so focused renders don't overwrite genome-wide ones. ISCN labels (e.g. `t(7;17)(q11.23;q12)`) print to stdout for each matched event.
+Output filenames get a `.focus_<chr>_<pos>` tag so focused renders don't overwrite genome-wide ones. Each matched BND prints to stdout with the event it belongs to — `t(7;17)(q11.23;q12)` only when both junctions of a translocation were found, `7q11.23::17q12 (single junction)` otherwise. Add `--only-sv-chroms` to reduce the circos to the chromosomes involved.
 
 ### Filter by ISCN cytoband
 
@@ -54,7 +71,7 @@ molamola --vcf sample.sniffles.vcf --cov-ratio 2.5 --cov-vaf-max 0.45 \
     --out reports/
 ```
 
-### Coarser density tracks
+### Coarser density rings
 
 ```sh
 molamola --vcf sample.sniffles.vcf --bin-size 5000000 --out reports/

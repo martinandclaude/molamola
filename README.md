@@ -39,9 +39,13 @@ pytest -v
 ## Quick start
 
 ```sh
-# Long-read SV VCF (Sniffles2 etc.) → cytogenetics report
+# Long-read SV VCF (Sniffles2 etc.) → cytogenetics report; candidate
+# rearrangements are listed on stdout and get their own panels
 molamola --vcf sample.sniffles.vcf --out reports/
 open reports/sample.report.html
+
+# Targeted / adaptive-sampling run: draw only chromosomes with a rearrangement
+molamola --vcf sample.sniffles.vcf --only-sv-chroms --out reports/
 
 # Mosdepth output → karyotype coverage report (genome-wide log2 depth)
 molamola --mosdepth sample.regions.bed.gz --reference hg38 --out reports/
@@ -66,10 +70,9 @@ See the [docs](https://martinandclaude.github.io/molamola/) for example output, 
 - [WhatsHap](https://github.com/whatshap/whatshap), [HiPhase](https://github.com/PacificBiosciences/HiPhase) — long-read phasing, which the BAF panel uses opportunistically when present.
 - [mosdepth](https://github.com/brentp/mosdepth) — per-bin coverage for karyotype mode.
 - [pyCirclize](https://github.com/moshi4/pyCirclize) — circos plot.
-- [matplotlib](https://github.com/matplotlib/matplotlib), [numpy](https://github.com/numpy/numpy).
-- [bcftools / samtools / htslib](https://github.com/samtools/bcftools) — VCF pre-processing helpers.
-- [mosdepth](https://github.com/brentp/mosdepth) — per-bin coverage input to karyotype mode.
+- [matplotlib](https://github.com/matplotlib/matplotlib), [numpy](https://github.com/numpy/numpy), [pandas](https://github.com/pandas-dev/pandas).
 - [UCSC Genome Browser](https://hgdownload.soe.ucsc.edu/) — hg38 and T2T-CHM13v2.0 cytobands.
+- [NCBI RefSeq](https://www.ncbi.nlm.nih.gov/refseq/) — gene annotation (release RS_2025_08) for breakpoint and fusion labels on both builds.
 - [iconsdb.com](https://www.iconsdb.com/) — header fish icon (deep-pink, mirrored).
 
 ## License

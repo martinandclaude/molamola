@@ -37,14 +37,14 @@ Active when the input VCF carries `##INFO=<ID=SVTYPE,...>` (Sniffles2 / cuteSV /
 | `--filter {pass,all}` | `pass` | keep PASS BNDs only, or include GT-filtered events. |
 | `--caller {auto,sniffles2,sniffles1,cutesv,svim,pbsv,nanovar}` | `auto` | SV caller; `auto` runs an INFO-fingerprint detector and falls back to sniffles2 on no match. Override useful for bcftools-merged or re-headered VCFs. |
 | `--mark-acrocentric` / `--no-mark-acrocentric` | on for hg38, off for t2t | grey out BNDs with both ends in chr13/14/15/21/22 p-arms (mostly mapping artefacts on hg38; real sequence on T2T-CHM13v2.0). |
-| `--cov-filter {none,mark,drop}` | `mark` | how to handle coverage-spike BNDs and DEL/DUP. `mark` greys flagged BNDs and drops noisy DEL/DUP from density strips; `drop` also removes flagged BNDs entirely; `none` ignores. |
+| `--cov-filter {none,mark,drop}` | `mark` | how to handle coverage-spike BNDs and DEL/DUP. `mark` greys flagged BNDs and drops noisy DEL/DUP from the density rings; `drop` also removes flagged BNDs entirely; `none` ignores. |
 | `--cov-ratio R` | `auto` | `max(COVERAGE) / baseline` threshold above which an event is suspicious. Default `auto` = `max(2.0, p99 of in-sample distribution)` per sample. The chosen value is printed at run start. |
 | `--cov-vaf-max V` | `0.35` | VAF below which a high-coverage event is treated as repeat-collapse noise. |
-| `--focus CHR:POS` | none | show only BNDs with an endpoint within `--focus-window` of `CHR:POS`. The second part can be either a position (`chr7:57716411`) or an ISCN cytoband (`chr7:q11.23`). Repeatable. |
+| `--focus CHR:POS` | none | draw only the rearrangements with a BND endpoint within `--focus-window` of `CHR:POS`, and print each matched BND with the event it belongs to (`t(8;21)(q21.3;q22.12)`, or `… (single junction)`). The second part can be either a position (`chr7:57716411`) or an ISCN cytoband (`chr7:q11.23`). Repeatable. |
 | `--focus-window N` | `1000` | +/-bp tolerance for `--focus` matching. |
 | `--min-svlen N` | `50` | hard SVLEN cutoff (bp) for non-BND SVs. Set `0` to disable. BNDs are unaffected. |
 | `--bin-size N` | `1,000,000` | bin width in bp for the circos SV density rings. |
-| `--plotvaf` | off | print each BND's VAF as a percentage next to its arc on the circos. Aimed at targeted / panel runs; on a WGS call set the labels overplot. Labels are staggered across four rings and, where breakpoints are too clustered to separate, drawn anyway with the overlap count reported. Noise-flagged BNDs are not labelled. |
+| `--plotvaf` | off | print each arc's VAF as a percentage on the circos rim (for a paired event, the mean of its two junctions). Aimed at targeted / panel runs; on a WGS call set the labels overplot. Labels are staggered across four rings and, where breakpoints are too clustered to separate, drawn anyway with the overlap count reported. Noise-flagged arcs are not labelled. |
 | `--only-sv-chroms` | off | draw only the chromosomes carrying at least one BND arc or rearrangement. For targeted / adaptive-sampling runs, where a genome-wide circos spends most of its disc on chromosomes with nothing to show. |
 
 ## Karyotype-mode flags

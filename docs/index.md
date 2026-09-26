@@ -36,6 +36,8 @@ conda create -n molamola -c bioconda -c conda-forge molamola
 
 ```sh
 molamola --vcf sample.vcf --out reports/
+# targeted / adaptive-sampling run: only chromosomes with a rearrangement
+molamola --vcf sample.vcf --only-sv-chroms --out reports/
 # or, for a coverage karyotype:
 molamola --mosdepth sample.regions.bed.gz --reference hg38 --out reports/
 ```
@@ -48,7 +50,7 @@ no external assets, opens offline.
 
 ## Example output
 
-Figure below comes from running molamola's SV mode on sample MH001
+The circos below comes from running molamola's SV mode on sample MH001
 (ONT LSK114 library prep, aligned-read N50 10.4 kb, median autosomal
 coverage 54x).
 
@@ -63,11 +65,11 @@ first -- so located events read on the rings while connections read
 across the disc. Each ribbon across the disc is a rearrangement:
 junctions are paired into translocations, inversions and insertions,
 and candidates -- both junctions found, outside repeats -- are drawn
-darkest, numbered on the disc and named beside it in ISCN form. Single
+widest, numbered on the disc and named beside it in ISCN form. Single
 junctions, most of a normal genome's arcs, stay faint. Ribbon colour
-encodes VAF as one of three discrete classes -- 0-33 %, 33-66 %,
-66-100 % -- rather than a continuous ramp, so the bands are separable
-at a glance. On this normal genome the only candidates are large
+encodes VAF as one of three discrete classes -- blue 0-33 %, orange
+33-66 %, near-black 66-100 % -- chosen to stay distinct under
+colour-blindness. On this normal genome the only candidates are large
 inversion calls, which are common polymorphisms or recurrent caller
 artefacts.
 
@@ -118,7 +120,7 @@ sources via `scripts/derive_karyotype_refs.py` and
 
 - [CLI reference](CLI.md) — every flag, with defaults and meanings.
 - [Examples](EXAMPLES.md) — worked commands for each report type.
-- [Filters](FILTERS.md) — noise heuristics, focus windows, mask and GC handling.
+- [Filters](FILTERS.md) — noise heuristics, rearrangement tiers, focus windows, mask and GC handling.
 - [Output spec](OUTPUTS.md) — what's in the HTML; how figures are encoded.
 
 ## Source

@@ -14,14 +14,13 @@ All bundled in `molamola/data/`:
 - `cytoBand.txt.gz` (hg38) and `cytoBand.t2t.txt.gz` (T2T-CHM13v2.0) — UCSC cytoband annotations for SV and karyotype modes.
 - `exclusion.hg38.bed.gz`, `exclusion.t2t.bed.gz` — karyotype-mode exclusion masks (~5.7 MB / ~6 MB; low-mappability ∪ polymorphic-TR catalog), built from 500 bp runs. A bin is dropped when more than `--mask-overlap` of it is masked. Override with `--mask`, disable with `--no-mask`.
 - `gc_10kb.hg38.bed.gz`, `gc_10kb.t2t.bed.gz` — karyotype-mode 10 kb GC tables (~1.5 MB each) driving the per-1 % GC-bucket median-ratio correction. Override with `--gc`, disable with `--no-gc`.
-
 - `genes.hg38.bed.gz`, `genes.t2t.bed.gz` — SV-mode gene tables (~275 kB each) for breakpoint and fusion labels: ~20,000 protein-coding genes plus the IG / TR loci (IGH, IGK, IGL, TRA/TRD, TRB, TRG) as one span each. From NCBI RefSeq annotation release RS_2025_08, which annotates GRCh38 and T2T-CHM13v2.0 natively in one run: the same gene symbols on both builds, and T2T coordinates that are the annotation's own rather than a liftover (they match NASVAR's T2T configuration).
 
 molamola is bundled-only by design — no auto-download, no online lookups. The bundled-data total is ~15.5 MB. All bundled refs are reproducibly regeneratable from public sources by running `scripts/derive_karyotype_refs.py` and `scripts/derive_gene_tables.py`.
 
 ## Circos plot (SV mode)
 
-The SV report's one figure. From the rim inward:
+The SV report's main figure; the derivative-chromosome panels follow it. From the rim inward:
 
 - **Cytoband ideogram** — molamola's greyscale ISCN ramp, with the centromere in red (black is not separable from `gpos100` on a ring five radial units thick).
 - **Four SV density rings**, outermost first: INS = blue, DEL = red, DUP = green, INV = purple. Each is 1 Mb-binned (`--bin-size`); alpha encodes count, sqrt-scaled and saturating at the 99th-percentile occupied bin rather than at the peak. Anchoring on the peak looked principled and was not — SV density is heavily skewed, so on a normal genome the peak bin is a far outlier from the typical one (INS: median 3 events per bin, peak 67), which pushed almost every bin into a 0.15-wide alpha band and made the track a near-uniform wash. The ~1 % of bins above the anchor clip to full alpha; single-event bins stay visible via a 0.20 alpha floor. Only occupied bins are drawn — an empty ring is bare paper, not a tinted band. Noise-flagged and non-PASS events are left out of the rings.

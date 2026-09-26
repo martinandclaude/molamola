@@ -1,6 +1,6 @@
 # Filters
 
-This page covers two distinct mechanisms: **SV-mode noise flags** (events stay in the report, just greyed) and **karyotype-mode QC** (bins / sites are dropped before plotting). The SV section comes first; jump to [Karyotype-mode QC](#karyotype-mode-qc) for the coverage / BAF rules.
+This page covers three mechanisms: **SV-mode noise flags** (events stay in the report, just greyed), **rearrangement tiers** (how BND junctions are paired and which pairs become candidates — display emphasis only) and **karyotype-mode QC** (bins / sites are dropped before plotting). Jump to [Rearrangement tiers](#rearrangement-tiers-sv-mode) or [Karyotype-mode QC](#karyotype-mode-qc).
 
 ## SV-mode noise flags
 
@@ -15,7 +15,7 @@ The directional sense of the **raise** / **lower** columns is consistent: raisin
 | `--cov-ratio` | `auto` (= `max(2.0, p99)`) | passing a higher fixed number (e.g. `--cov-ratio 4`) flags fewer events; only extreme coverage spikes get caught. | passing a lower fixed number (e.g. `--cov-ratio 2`) flags more events; even mild coverage anomalies are excluded. The default `auto` adapts per sample. |
 | `--cov-vaf-max` | `0.35` | flags more high-coverage events as noise (some real mosaic / subgermline events may get greyed). | flags fewer; only unambiguously low-VAF artefacts. |
 | `--mark-acrocentric` | on for hg38, off for t2t | binary — on means chr13/14/15/21/22 p-arm-only BNDs render grey. Off when investigating real acrocentric biology, or for T2T (where those p-arms are real, fully-resolved sequence). |  |
-| `--min-svlen` | `50` | shows only larger SVs everywhere (density tracks and stdout summaries); cleaner picture, but small events (Alu insertions, micro-deletions) drop out. | includes very small events (10–50 bp); polymorphism noise dominates. Set `0` to disable. |
+| `--min-svlen` | `50` | shows only larger SVs everywhere (density rings and stdout summaries); cleaner picture, but small events (Alu insertions, micro-deletions) drop out. | includes very small events (10–50 bp); polymorphism noise dominates. Set `0` to disable. |
 | `--focus-window` | `1000` | accepts more candidate matches around a focus position; useful for IMPRECISE breakpoints. | tighter exact-position match. |
 
 ## What each filter does
@@ -34,11 +34,11 @@ On hg38, the p-arms of chr13/14/15/21/22 are largely unresolved (rDNA arrays, sa
 
 ### Minimum size (`--min-svlen`)
 
-Non-BND SVs (INS / DEL / DUP / INV) shorter than `--min-svlen` (default 50 bp) are dropped from every downstream consumer: density tracks and stdout summaries. BND records have no SVLEN and are not affected. Set `--min-svlen 0` to keep every event.
+Non-BND SVs (INS / DEL / DUP / INV) shorter than `--min-svlen` (default 50 bp) are dropped from every downstream consumer: density rings and stdout summaries. BND records have no SVLEN and are not affected. Set `--min-svlen 0` to keep every event.
 
 ### Focus window (`--focus-window`)
 
-When `--focus CHR:POS` is given, BNDs whose endpoints fall within `±--focus-window bp` of the requested coordinate are kept and the rest are filtered out for that figure.
+When `--focus CHR:POS` is given, BNDs whose endpoints fall within `±--focus-window bp` of the requested coordinate are kept and the rest are filtered out for that figure. Rearrangements are still classified on the whole call set first, so a focused BND is drawn as part of its event — paired with its reciprocal junction even when that one lies outside the window.
 
 ## Rearrangement tiers (SV mode)
 
