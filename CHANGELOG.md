@@ -7,11 +7,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Changed
 
+- **The circos now keys its own arcs and cytobands.** With the linear map gone (see Removed), the circos is the only SV figure, so it carries the keys the map used to hold: an arc key (solid = PASS coloured by VAF, grey dashed = noise-flagged, plus a dashed non-PASS entry when `--filter all` draws any) and a cytoband key with the circos's red centromere, alongside the existing density-ring key and VAF colorbar.
+- **VAF classes are named by range, not zygosity.** The colorbar used to write mosaic / het / hom inside its three bands. Those are germline readings: in a tumour sample a translocation's VAF tracks blast fraction and clonality, so a clonal event in a sample with 25 % blasts was labelled "mosaic". The classes are now 0-33 %, 33-66 % and 66-100 %, which the colorbar's edge ticks already state, so nothing is written inside the bands. Class edges and colours are unchanged.
 - **The SV density legends no longer print a "peak N" per type.** The number was the busiest single 1 Mb bin, and it was the top of the colour scale until v0.6.0 moved the alpha ramp to a 99th-percentile anchor. After that it sat directly beside a legend title saying the scale saturates somewhere else — for INS on a typical genome, `peak 67` next to a scale that in fact saturates at 35, with ~1 % of bins clipping. A number that contradicts the title it sits under is worse than no number, and the peak was not otherwise helping a reader decode the ink. Entries now carry the per-type event count only, on both the circos rings and the linear map's strips. `type_peak` is no longer computed or threaded through the plotting chain.
 - **`docs/EXAMPLES.md`: the "heavier smoothing" karyotype example now actually smooths more.** It passed `--smooth-window-mb 1.0`, which became *lighter* than the default when that moved to 10 Mb, and `--ymax 4`, a linear-CN value that means CN 32 on the log2 axis introduced in v0.5.0. It now passes `--smooth-window-mb 20` and leaves the axis at its default.
 
 ### Removed
 
+- **The linear genome map is gone from the SV report — BREAKING for `--png` users**, who no longer get `<sample>.report.sv_map.png`; `--png` now writes only the circos. On a normal genome the map drew ~100 BND arcs across 24 chromosome rows and an arc's endpoints could not be read, and its density strips duplicated the circos rings bin for bin. The report now embeds one figure.
 - **`summarize_bnds.sh`**, the bcftools BND audit script at the repository root, and with it the samtools / bcftools / htslib / tabix entries in `environment.yml` that existed only for it. It was never part of the installed package.
 
 ## [0.6.0] — 2026-08-30

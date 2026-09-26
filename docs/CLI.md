@@ -25,7 +25,7 @@ See [`FILTERS.md`](FILTERS.md) for what every threshold does. See [`OUTPUTS.md`]
 | `--out DIR` | **required** | output directory (created if absent). molamola exits 2 with a usage error if omitted, rather than silently writing next to the input. Filenames: `<sample>.report.html` (SV), `<sample>.karyotype.report.html` (karyotype). |
 | `--reference {hg38,t2t}` | `hg38` | reference assembly the input was called against. Both modes support hg38 and T2T-CHM13v2.0. |
 | `--sample NAME` | input basename | sample label shown in the report header. |
-| `--png` | off | also write each embedded figure as a standalone PNG alongside the HTML (for MultiQC / pipeline embeds). Karyotype mode writes `<sample>.karyotype.genome.png`. |
+| `--png` | off | also write each embedded figure as a standalone PNG alongside the HTML (for MultiQC / pipeline embeds). SV mode writes `<sample>.report.circos.png`; karyotype mode writes `<sample>.karyotype.genome.png`. |
 | `--force` | off | bypass the safety check that errors out when the input filename hints at a reference different from `--reference` (e.g. `sample.t2t.vcf` with `--reference hg38`). |
 
 ## SV-mode flags
@@ -43,7 +43,7 @@ Active when the input VCF carries `##INFO=<ID=SVTYPE,...>` (Sniffles2 / cuteSV /
 | `--focus CHR:POS` | none | show only BNDs with an endpoint within `--focus-window` of `CHR:POS`. The second part can be either a position (`chr7:57716411`) or an ISCN cytoband (`chr7:q11.23`). Repeatable. |
 | `--focus-window N` | `1000` | +/-bp tolerance for `--focus` matching. |
 | `--min-svlen N` | `50` | hard SVLEN cutoff (bp) for non-BND SVs. Set `0` to disable. BNDs are unaffected. |
-| `--bin-size N` | `1,000,000` | density-track bin width in bp. |
+| `--bin-size N` | `1,000,000` | bin width in bp for the circos SV density rings. |
 | `--plotvaf` | off | print each BND's VAF as a percentage next to its arc on the circos. Aimed at targeted / panel runs; on a WGS call set the labels overplot. Labels are staggered across four rings and, where breakpoints are too clustered to separate, drawn anyway with the overlap count reported. Noise-flagged BNDs are not labelled. |
 
 ## Karyotype-mode flags

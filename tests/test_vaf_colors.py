@@ -107,6 +107,25 @@ def test_colorbar_ticks_are_labelled_as_percentages():
     assert labels == ["0 %", "33 %", "66 %", "100 %"]
 
 
+def test_vaf_classes_are_named_by_range_not_by_zygosity():
+    """mosaic / het / hom is germline language. In a leukaemia VAF tracks
+    blast fraction and clonality, so a clonal event at 25 % blasts would
+    read as "mosaic". The classes carry their range only, and the colorbar
+    writes nothing inside its bands."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    assert mm.VAF_CLASS_LABELS == ("0-33 %", "33-66 %", "66-100 %")
+    fig, ax = plt.subplots()
+    sm = plt.cm.ScalarMappable(cmap=mm.VAF_CMAP, norm=mm.VAF_NORM)
+    cb = fig.colorbar(sm, ax=ax)
+    mm._style_vaf_colorbar(cb)
+    in_band = [t.get_text() for t in cb.ax.texts]
+    plt.close(fig)
+    assert in_band == []
+
+
 # --- --plotvaf -------------------------------------------------------------
 
 def test_plotvaf_flag_defaults_off():

@@ -1,10 +1,11 @@
 """Circos SV density rings, legends, and the shared density path.
 
-The circos gained an INS / DEL / DUP / INV ring stack so it no longer
-depends on the linear genome map for positional SVs. The invariants
-pinned here are the ones that make the two figures readable as one
-report: same filter, same normalisation, same type order, and a ring
-stack that does not grow into its neighbours' radii.
+The circos is the only SV figure since the linear genome map was
+removed, so it carries INS / DEL / DUP / INV as a ring stack and keys
+its own ink. The invariants pinned here: one filter and normalisation
+for every density consumer, a stable type order, a ring stack that does
+not grow into its neighbours' radii, and legends that explain every
+style the disc draws.
 """
 
 from __future__ import annotations
@@ -99,8 +100,9 @@ def test_ring_stack_clears_the_cytoband_ring():
     assert max(mm.CIRCOS_SV_RING_R) < 95.0
 
 
-def test_ring_order_matches_the_linear_map():
-    """A reader who has learned one figure should not relearn the other."""
+def test_ring_order_is_the_canonical_type_order():
+    """The order the removed linear map used; kept so readers of older
+    reports do not relearn the stack."""
     assert mm.CIRCOS_SV_RING_ORDER == mm.SV_TYPES
 
 
@@ -172,8 +174,9 @@ def test_density_drops_non_pass_and_noise(make_sv):
     assert svs_filt == [keep]
 
 
-def test_density_and_linear_map_share_one_normalisation(make_sv):
-    """Same bin must not render at two alphas across one report."""
+def test_density_binning_is_deterministic(make_sv):
+    """Same input, same bins and anchor - the ring alphas are a pure
+    function of the call set."""
     svs = [make_sv(chrom="chr1", start=i * 1000, svtype="DEL")
            for i in range(7)]
     contigs = {"chr1": 10_000_000}
@@ -245,9 +248,44 @@ def test_legend_entries_carry_counts_not_a_scale_number(make_sv, make_bnd,
     the legend's own title.
     """
     import inspect
-    assert "type_peak" not in inspect.signature(mm._add_circos_legend).parameters
-    src = inspect.getsource(mm._add_circos_legend)
+    assert "type_peak" not in inspect.signature(mm._add_circos_legends).parameters
+    src = inspect.getsource(mm._add_circos_legends)
     assert "peak" not in src.split('"""')[2]
+
+
+def _legend_texts(legends):
+    return [[t.get_text() for t in lg.get_texts()] for lg in legends]
+
+
+def test_circos_keys_its_own_arcs_and_cytobands():
+    """With the linear map gone, the circos has to explain the noise-arc
+    style and the cytoband greys itself."""
+    import matplotlib.pyplot as plt
+    fig = plt.figure()
+    try:
+        rings, arcs, cyto = mm._add_circos_legends(
+            fig, {"INS": 3, "DEL": 2, "DUP": 1, "INV": 0}, 1_000_000,
+            any_non_pass=False,
+        )
+        texts = _legend_texts([rings, arcs, cyto])
+    finally:
+        plt.close(fig)
+    assert texts[0] == ["INS  3", "DEL  2", "DUP  1", "INV  0"]
+    assert "noise-flagged" in texts[1]
+    assert not any("non-PASS" in t for t in texts[1])
+    assert "acen" in texts[2] and "gneg" in texts[2]
+
+
+def test_non_pass_key_appears_only_when_non_pass_arcs_are_drawn():
+    import matplotlib.pyplot as plt
+    fig = plt.figure()
+    try:
+        _, arcs, _ = mm._add_circos_legends(
+            fig, {}, 1_000_000, any_non_pass=True,
+        )
+        assert "non-PASS" in [t.get_text() for t in arcs.get_texts()]
+    finally:
+        plt.close(fig)
 
 
 def test_ramp_spreads_a_skewed_distribution_wider_than_peak_anchoring():
@@ -272,9 +310,9 @@ def test_ramp_spreads_a_skewed_distribution_wider_than_peak_anchoring():
 
 # --- cytoband palette ------------------------------------------------------
 
-def test_circos_cytobands_share_the_linear_map_greys():
-    """The circos took pyCirclize's own ramp until v0.6; both figures
-    sit in one report and must agree on what a grey band means."""
+def test_circos_cytobands_use_the_molamola_greys():
+    """The circos took pyCirclize's own ramp until v0.6; it must agree
+    with molamola's ideogram greys on what a grey band means."""
     for stain in ("gneg", "gpos25", "gpos50", "gpos75", "gpos100", "gvar"):
         assert mm.CIRCOS_CYTOBAND_COLORS[stain] == mm.CYTOBAND_COLORS[stain]
 

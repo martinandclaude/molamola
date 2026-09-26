@@ -45,10 +45,9 @@ no external assets, opens offline.
 
 ## Example output
 
-Figures below come from running molamola's SV mode on sample MH001
+Figure below comes from running molamola's SV mode on sample MH001
 (ONT LSK114 library prep, aligned-read N50 10.4 kb, median autosomal
-coverage 54x). The HTML report embeds both plots back-to-back; shown
-separately here for clarity.
+coverage 54x).
 
 ### Circos plot
 
@@ -60,22 +59,9 @@ four 1-Mb-bin SV density rings -- INS, DEL, DUP, INV, outermost
 first -- so located events read on the rings while connections read
 across the disc. Each ribbon across the disc is a BND (translocation
 or large rearrangement); ribbon colour encodes VAF as one of three
-discrete classes -- mosaic (0-33 %), het (33-66 %), hom (66-100 %) --
-rather than a continuous ramp, so the bands are separable at a
-glance. At-a-glance view for inter-chromosomal events.
-
-### Linear genome map
-
-![SV linear plot](example_sv_linear.png)
-
-One row per chromosome (chr1 at top, chrY at bottom). Cytobands
-embedded inside each chromosome track. Above each track sit four
-1-Mb-bin density strips — INS = blue, DEL = red, DUP = green,
-INV = purple — with alpha encoding per-bin event count on a scale
-that saturates at the 99th-percentile bin, identical to the circos
-rings. BND arcs hang above the tracks, colour-encoded by
-VAF as in the circos. Better for per-chromosome detail and density
-hotspots, and for reading a single chromosome end to end.
+discrete classes -- 0-33 %, 33-66 %, 66-100 % -- rather than a
+continuous ramp, so the bands are separable at a glance. Keys for the
+rings, the arc styles and the cytoband greys sit beside the disc.
 
 ## Bundled references
 

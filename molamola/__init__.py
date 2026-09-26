@@ -4,9 +4,9 @@
 One input in, one self-contained HTML out. molamola is a cytogenetics
 visualiser for long-read data and ships two report types:
 
-- **SV / cytogenetics report** — a circos plot plus a linear cytoband
-  ideogram, both carrying per-type SV density tracks (INS / DEL / DUP /
-  INV) and BND arcs. Selected when the VCF carries
+- **SV / cytogenetics report** — a circos plot: cytoband ideogram,
+  per-type SV density rings (INS / DEL / DUP / INV) and BND arcs.
+  Selected when the VCF carries
   ``##INFO=<ID=SVTYPE,...>`` (Sniffles2 / cuteSV / SVIM / pbsv /
   NanoVar). Supports hg38 and T2T-CHM13v2.0 via bundled cytobands.
 
@@ -57,9 +57,7 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.colors import to_rgb
 from matplotlib.lines import Line2D
-from matplotlib.path import Path as MplPath
 
 
 # ---------------------------------------------------------------------------
@@ -111,8 +109,8 @@ CYTOBAND_COLORS: dict[str, str] = {
 #:
 #: acen keeps a red because the ring is only 5 radial units thick and
 #: black acen is not separable from gpos100 at that size, which costs
-#: the reader the one landmark that orients a circle with no axis. The
-#: linear map has room to render acen black and does.
+#: the reader the one landmark that orients a circle with no axis.
+#: Figures with room for a real ideogram keep acen black.
 CIRCOS_CYTOBAND_COLORS: dict[str, str] = {
     **CYTOBAND_COLORS,
     "acen": "#D92F27",
@@ -141,10 +139,11 @@ SV_COV_FILTER_TYPES: tuple[str, ...] = ("DEL", "DUP")
 #: A linear [0, 1] ramp crowds the bulk of a typical ONT call set into
 #: one narrow stretch of colour that is not separable at 1 px
 #: linewidth. Even thirds keep the scale trivially readable - a reader
-#: does not have to remember five boundaries - and land close enough
-#: to the biology to be useful: below a third reads as mosaic or
-#: subclonal, the middle third as heterozygous, the top third as
-#: homozygous.
+#: does not have to remember five boundaries. The classes are named by
+#: their range only: in a germline sample they roughly track
+#: mosaic / het / hom, but in a tumour sample VAF follows clone
+#: fraction, and a germline name would misread a clonal event in a
+#: low-blast sample as mosaic.
 VAF_CLASS_EDGES: tuple[float, ...] = (0.0, 0.33, 0.66, 1.0)
 
 #: One colour per class, low to high. Chosen under simulated
@@ -167,14 +166,14 @@ VAF_CLASS_EDGES: tuple[float, ...] = (0.0, 0.33, 0.66, 1.0)
 #: Lightness also decreases monotonically with VAF, so the ordering
 #: survives even a total loss of hue discrimination.
 VAF_CLASS_COLORS: tuple[str, ...] = (
-    "#035AF3",  # 0 - 33 %    mosaic / subclonal
-    "#634980",  # 33 - 66 %   het
-    "#781B00",  # 66 - 100 %  hom
+    "#035AF3",  # 0 - 33 %
+    "#634980",  # 33 - 66 %
+    "#781B00",  # 66 - 100 %
 )
 
-#: Class names, in the same order as :data:`VAF_CLASS_COLORS`. Used to
-#: annotate the colorbar so the scale is readable without a legend.
-VAF_CLASS_LABELS: tuple[str, ...] = ("mosaic", "het", "hom")
+#: Class names, in the same order as :data:`VAF_CLASS_COLORS`: the VAF
+#: range, nothing more (see :data:`VAF_CLASS_EDGES` for why).
+VAF_CLASS_LABELS: tuple[str, ...] = ("0-33 %", "33-66 %", "66-100 %")
 
 #: Figure background. A hair off pure white: enough tone to give thin
 #: BND arcs and pale cytobands something to sit against, not enough to
@@ -208,11 +207,9 @@ VAF_LABEL_MIN_SEP_FRAC: float = 1 / 140
 #: used on a genome-scale call set.
 VAF_LABEL_CROWDING_WARN: int = 60
 
-VAF_VMIN: float = 0.0
-VAF_VMAX: float = 1.0
 VAF_CMAP = mcolors.ListedColormap(VAF_CLASS_COLORS, name="molamola_vaf")
 
-#: Norm shared by :func:`vaf_to_color` and both colorbars, so the arcs
+#: Norm shared by :func:`vaf_to_color` and the colorbar, so the arcs
 #: and the scale they are read against can never drift apart.
 VAF_NORM = mcolors.BoundaryNorm(VAF_CLASS_EDGES, len(VAF_CLASS_COLORS))
 
@@ -220,12 +217,11 @@ NOISE_COLOR: str = "#888888"
 
 #: Radial span of the SV density ring stack on the circos, just inside
 #: the cytoband ring (95-100). Four rings share this band, one per SV
-#: type, so the circos carries the same INS / DEL / DUP / INV signal as
-#: the linear genome map instead of depending on it.
+#: type, so INS / DEL / DUP / INV each have their own track.
 #:
 #: Type is encoded by *radius* first and colour second, deliberately.
-#: :data:`SV_TYPE_COLOR` is safe on the linear map only because each
-#: type owns a strip row there; measured under simulated colour-vision
+#: :data:`SV_TYPE_COLOR` is safe only while each type owns its own
+#: ring (or, formerly, its own strip row); measured under simulated colour-vision
 #: deficiency the palette collapses on its own (INS/INV dE 4.0 protan,
 #: DEL/DUP dE 5.9 deutan). Giving each type its own ring keeps colour
 #: redundant rather than load-bearing, so the locked palette stays put.
@@ -235,10 +231,9 @@ NOISE_COLOR: str = "#888888"
 #: Mb labels.
 CIRCOS_SV_RING_R: tuple[float, float] = (72.0, 90.0)
 
-#: Ring order, outermost first. INS sits closest to the cytoband ring
-#: because on the linear map INS is the strip closest to the chromosome
-#: bar; keeping the order means a reader who has learned one figure can
-#: read the other without relearning the stack.
+#: Ring order, outermost first. The order is the one the removed linear
+#: genome map used for its strips (INS closest to the chromosome), kept
+#: so readers of older reports do not have to relearn the stack.
 CIRCOS_SV_RING_ORDER: tuple[str, ...] = ("INS", "DEL", "DUP", "INV")
 
 #: Share of the ring stack each type gets, before gaps. Not equal, and
@@ -354,7 +349,6 @@ KARY_RULE: str    = "#E4E0D8"
 KARY_SCATTER: str = "#3D3D45"
 KARY_ROSE: str    = "#DC5A99"
 KARY_OXFORD: str  = "#1F4F7A"
-KARY_MIST: str    = "#DDE6D8"
 
 #: Karyotype scatter inks. Chromosomes alternate between these two so the
 #: boundaries read at a glance instead of having to be traced back to the
@@ -2562,24 +2556,17 @@ def vaf_to_color(vaf: float, cmap=None):
 
 
 def _style_vaf_colorbar(cb) -> None:
-    """Tick a VAF colorbar at the class edges and name each band.
+    """Tick a VAF colorbar at the class edges, as percentages.
 
-    Edges are labelled as percentages rather than fractions, and the
-    class name is written inside its band: the boundaries alone say
-    where the cuts are but not what they mean, and the name is what a
-    reader actually matches an arc against.
+    The bands used to carry germline names inside them (mosaic / het /
+    hom). Those misread tumour samples - in a leukaemia a translocation's
+    VAF tracks blast fraction and clonality, so a clonal event in a
+    sample with 25 % blasts was labelled "mosaic". The classes are now
+    just VAF ranges, which the edge ticks already state.
     """
     cb.set_ticks(list(VAF_CLASS_EDGES))
     cb.set_ticklabels([f"{round(e * 100)} %" for e in VAF_CLASS_EDGES])
     cb.ax.tick_params(labelsize=8)
-    mids = zip(VAF_CLASS_EDGES[:-1], VAF_CLASS_EDGES[1:], VAF_CLASS_LABELS)
-    for lo, hi, label in mids:
-        cb.ax.text(
-            0.5, (lo + hi) / 2.0, label,
-            ha="center", va="center", rotation=90,
-            fontsize=7.0, color="white",
-            transform=cb.ax.get_yaxis_transform(),
-        )
 
 
 def _bin_sv_counts(
@@ -2640,12 +2627,11 @@ def _sv_density(
     contigs: dict[str, int],
     bin_size: int,
 ) -> tuple[list[str], list[SV], dict, dict[str, float]]:
-    """Bin the plottable non-BND SVs for the circos and the linear map.
+    """Bin the plottable non-BND SVs for the circos density rings.
 
-    Both figures show the same density signal, so both must apply the
-    same filter and the same per-type normalisation - otherwise an
-    identical bin would render at two different alphas across the two
-    panels of one report. Keeping the filter here rather than at each
+    Every density consumer must apply the same filter and the same
+    per-type normalisation - otherwise an identical bin would render at
+    two different alphas within one report. Keeping the filter here rather than at each
     call site is what guarantees that.
 
     Noise-flagged and non-PASS events are dropped: the density strips
@@ -2806,11 +2792,10 @@ def _draw_sv_density_rings(
 ) -> int:
     """Draw one alpha-encoded SV density ring per type inside the cytobands.
 
-    This is the linear map's density strip stack bent into a circle:
+    This was the linear map's density strip stack bent into a circle:
     same bins, same per-type normalisation, same alpha ramp, same order.
-    It is what makes the circos self-contained - before this, INS / DEL /
-    DUP / INV existed only on the linear map and the circos showed
-    translocations against bare cytobands.
+    With the linear map removed it is the only place INS / DEL / DUP /
+    INV are drawn.
 
     Only non-empty bins get ink. An earlier version tinted each whole
     ring at a faint alpha so an empty ring still read as a ring, but on
@@ -2852,51 +2837,81 @@ def _draw_sv_density_rings(
     return n_drawn
 
 
-def _add_circos_legend(
+def _add_circos_legends(
     fig,
     n_svs_by_type: dict[str, int],
     bin_size: int,
-):
-    """Attach the ring legend to the circos figure.
+    *,
+    any_non_pass: bool,
+) -> list:
+    """Attach the circos keys: density rings, arc styles, cytobands.
 
-    Entries carry the per-type event count and nothing else. They used
-    to also carry the busiest bin ("peak N"), which was the top of the
-    colour scale until the ramp moved to a 99th-percentile anchor -
-    after that the number sat beside a title saying the scale saturates
-    somewhere else, which is worse than no number at all. The legend's
-    job here is to say which ring is which type and how many events it
-    holds; the alpha ramp is described in the title.
+    The circos is the only SV figure since the linear genome map was
+    removed, so it has to explain its own ink. Three keys stack in the
+    right-hand column, with the VAF colorbar between the arc key and
+    the cytoband key:
 
-    Only the rings are keyed here. The cytoband greyscale and the
-    grey/dashed noise-arc style are both explained by the linear genome
-    map's legends, and the two figures sit back to back in the same
-    report - repeating them on the circos cost disc space without
-    telling a reader anything the facing figure had not already said.
-    The VAF colorbar beside the disc covers the arc colouring.
+    - **rings**: which ring is which type, with its per-type event
+      count. No number for the alpha scale - the ramp saturates at the
+      99th-percentile bin, which the title says, and printing the
+      busiest bin beside that invited readers to take the wrong number
+      as the top of the scale.
+    - **arcs**: solid = PASS (coloured by the VAF bar), grey dashed =
+      noise-flagged. A dashed coloured entry for non-PASS events is
+      added only when some are drawn (``--filter all``).
+    - **cytobands**: the greyscale ramp with the circos's red
+      centromere, which differs from the black used on ideograms.
 
-    Returns the legend artist, which ``bbox_inches="tight"`` needs
-    listed explicitly or it can crop entries that sit outside the axes.
+    Returns the legend artists, which ``bbox_inches="tight"`` needs
+    listed explicitly or it can crop entries outside the axes.
     """
     bin_mb = bin_size / 1_000_000
     bin_label = (f"{bin_mb:g} Mb" if bin_mb >= 1
                  else f"{bin_size // 1000:,} kb")
+    style = dict(frameon=True, framealpha=0.9, edgecolor="#CCCCCC",
+                 facecolor=PAPER_BG, fontsize=7.5, title_fontsize=7.5,
+                 alignment="left", loc="upper left")
 
-    handles = [
+    ring_handles = [
         mpatches.Patch(
             facecolor=SV_TYPE_COLOR[t], edgecolor="none",
             label=f"{t}  {n_svs_by_type.get(t, 0):,}",
         )
         for t in CIRCOS_SV_RING_ORDER
     ]
-    return fig.legend(
-        handles=handles,
-        loc="upper left", bbox_to_anchor=(0.78, 0.88),
-        fontsize=7.5, frameon=True, framealpha=0.9,
-        edgecolor="#CCCCCC", facecolor=PAPER_BG,
+    rings = fig.legend(
+        handles=ring_handles, bbox_to_anchor=(0.78, 0.92),
         title=f"SV density rings, outer to inner\n(alpha saturates at the "
               f"99th-percentile {bin_label} bin)",
-        title_fontsize=7.5, alignment="left",
+        **style,
     )
+
+    arc_handles = [
+        plt.Line2D([0], [0], color=VAF_CLASS_COLORS[1], linewidth=1.4,
+                   alpha=0.70, label="PASS (colour = VAF)"),
+    ]
+    if any_non_pass:
+        arc_handles.append(plt.Line2D(
+            [0], [0], color=VAF_CLASS_COLORS[1], linewidth=1.4, alpha=0.30,
+            linestyle=(0, (3, 2)), label="non-PASS"))
+    arc_handles.append(plt.Line2D(
+        [0], [0], color=NOISE_COLOR, linewidth=1.4, alpha=0.5,
+        linestyle=(0, (3, 2)), label="noise-flagged"))
+    arcs = fig.legend(
+        handles=arc_handles, bbox_to_anchor=(0.78, 0.715),
+        title="BND arcs (width = read support)", **style,
+    )
+
+    cyto_handles = [
+        mpatches.Patch(facecolor=CIRCOS_CYTOBAND_COLORS[st],
+                       edgecolor="#555555", linewidth=0.5, label=st)
+        for st in ("gneg", "gpos50", "gpos100", "acen", "gvar")
+    ]
+    cyto = fig.legend(
+        handles=cyto_handles, bbox_to_anchor=(0.78, 0.235),
+        title="cytobands", ncols=2, **style,
+    )
+    return [rings, arcs, cyto]
 
 
 def plot_circos(
@@ -2921,7 +2936,7 @@ def plot_circos(
     svs : list[SV]
         Non-BND SVs, size-filtered upstream. Binned into the four
         density rings; PASS and noise filtering happens in
-        :func:`_sv_density` so the rings match the linear map exactly.
+        :func:`_sv_density`.
     contigs : dict[str, int]
         Chromosome lengths from the VCF header.
     cytoband_path : Path
@@ -2939,9 +2954,7 @@ def plot_circos(
         a WGS call set. Noise-flagged BNDs are never labelled: they
         are deliberately de-emphasised and a label would undo that.
     bin_size : int, optional
-        Density-ring bin width in bp (default 1,000,000). Must match
-        the linear map's, or the same bin renders at two alphas
-        across one report.
+        Density-ring bin width in bp (default 1,000,000).
     """
     import tempfile
 
@@ -3060,257 +3073,25 @@ def plot_circos(
         (1.0 - 2 * m) / CIRCOS_FIG_WIDEN, 1.0 - 2 * m,
     ])
 
-    cax = fig.add_axes([0.795, 0.24, 0.016, 0.40])
+    cax = fig.add_axes([0.795, 0.28, 0.016, 0.28])
     sm = plt.cm.ScalarMappable(cmap=VAF_CMAP, norm=VAF_NORM)
     cb = fig.colorbar(sm, cax=cax, label="VAF")
     _style_vaf_colorbar(cb)
 
-    legend = _add_circos_legend(fig, n_svs_by_type, bin_size)
+    legends = _add_circos_legends(
+        fig, n_svs_by_type, bin_size,
+        any_non_pass=any(not b.is_pass for b in bnds_unique),
+    )
 
     fig.set_facecolor(PAPER_BG)
     fig.savefig(out_path, dpi=200, bbox_inches="tight",
-                bbox_extra_artists=[legend],
+                bbox_extra_artists=legends,
                 facecolor=fig.get_facecolor())
     plt.close(fig)
 
     # Clean up the staged tempdir.
     import shutil
     shutil.rmtree(tmp_dir, ignore_errors=True)
-
-
-# ---------------------------------------------------------------------------
-# B) Genome SV map
-# ---------------------------------------------------------------------------
-
-def _draw_chromosome_row(
-    ax,
-    chrom: str,
-    y0: float,
-    chr_h: float,
-    strip_h: float,
-    contig_len: int,
-    cytobands: dict,
-    bins: dict,
-    type_anchor: dict[str, float],
-    max_len: int,
-) -> None:
-    """Render one chromosome row: cytoband bar + 4 density strips + label."""
-    # Cytoband bar
-    for (start, end, _name, stain) in cytobands.get(chrom, []):
-        color = CYTOBAND_COLORS.get(stain, "#FFFFFF")
-        ax.add_patch(mpatches.Rectangle(
-            (start, y0), end - start, chr_h,
-            facecolor=color, edgecolor="none",
-        ))
-    ax.add_patch(mpatches.Rectangle(
-        (0, y0), contig_len, chr_h,
-        facecolor="none", edgecolor="black", linewidth=0.6,
-    ))
-    # Density strips (alpha-encoded count above each chromosome)
-    for k, t in enumerate(SV_TYPES):
-        counts = bins[t]
-        y_strip = y0 + chr_h + k * strip_h
-        base_rgb = np.array(to_rgb(SV_TYPE_COLOR[t]))
-        alphas = sv_density_alpha(counts, type_anchor[t], svtype=t)
-        rgba = np.zeros((1, len(counts), 4))
-        rgba[0, :, :3] = base_rgb
-        rgba[0, :, 3] = alphas
-        ax.imshow(
-            rgba,
-            extent=(0, contig_len, y_strip, y_strip + strip_h),
-            aspect="auto", origin="lower",
-            interpolation="nearest",
-        )
-    # Chromosome label, centred vertically over the cytoband + strip stack
-    ax.text(
-        -max_len * 0.018,
-        y0 + (chr_h + len(SV_TYPES) * strip_h) / 2,
-        chrom.replace("chr", ""),
-        ha="right", va="center", fontsize=10, fontweight="bold",
-    )
-
-
-def _draw_bnd_arcs(
-    ax,
-    bnds: list[BND],
-    chr_index: dict[str, int],
-    y_for: dict[str, float],
-    chr_h: float,
-    strip_h: float,
-    row_h: float,
-    max_len: int,
-) -> None:
-    """Render BND arcs above the chromosome stack.
-
-    Each arc is a quadratic Bezier whose apex sits well above the
-    density-strip top of both endpoints, so it visibly clears the
-    strips. Apex height grows with the row gap and horizontal span.
-    """
-    supports = np.array([b.support for b in bnds], dtype=float)
-    smax = supports.max() if supports.size else 1.0
-    strips_top_offset = chr_h + len(SV_TYPES) * strip_h
-
-    ordered = sorted(bnds, key=lambda x: (not x.is_noise, x.support))
-    for b in ordered:
-        if b.chr1 not in y_for or b.chr2 not in y_for:
-            continue
-        y_chr_top1 = y_for[b.chr1] + chr_h
-        y_chr_top2 = y_for[b.chr2] + chr_h
-        strips_top1 = y_for[b.chr1] + strips_top_offset
-        strips_top2 = y_for[b.chr2] + strips_top_offset
-
-        x1, x2 = b.pos1, b.pos2
-        row_gap_steps = abs(chr_index[b.chr1] - chr_index[b.chr2])
-        span_frac = abs(x2 - x1) / max_len
-        apex_y = (
-            max(strips_top1, strips_top2)
-            + 0.6
-            + 0.45 * row_gap_steps * row_h
-            + 0.6 * span_frac
-        )
-        cx = (x1 + x2) / 2
-        path = MplPath(
-            [(x1, y_chr_top1), (cx, apex_y), (x2, y_chr_top2)],
-            [MplPath.MOVETO, MplPath.CURVE3, MplPath.CURVE3],
-        )
-        color, alpha, ls = render_props(b)
-        lw = support_to_lw(b.support, smax, 0.4, 2.0)
-        ax.add_patch(mpatches.PathPatch(
-            path, facecolor="none", edgecolor=color,
-            alpha=alpha, linewidth=lw, linestyle=ls,
-        ))
-        ax.scatter(
-            [x1, x2], [y_chr_top1, y_chr_top2], s=8,
-            facecolors=[color], edgecolors="black",
-            linewidths=0.3, zorder=4, alpha=alpha,
-        )
-
-
-def _add_genome_map_decor(
-    fig,
-    ax,
-    n_svs_by_type: dict[str, int],
-    bin_size: int,
-    max_len: int,
-    n_chr: int,
-    row_h: float,
-) -> None:
-    """Apply axes formatting, legends, and colorbar to the genome map."""
-    top_y = n_chr * row_h + 4.0
-    ax.set_xlim(-max_len * 0.06, max_len * 1.02)
-    ax.set_ylim(-0.4, top_y)
-    ax.set_yticks([])
-    ax.set_xticks(np.arange(0, max_len + 1, 50_000_000))
-    ax.set_xticklabels([str(int(x / 1e6)) for x in np.arange(0, max_len + 1, 50_000_000)])
-    ax.set_xlabel("Position (Mb)")
-    ax.spines[["top", "right", "left"]].set_visible(False)
-
-    bin_mb = bin_size // 1_000_000
-    cyto_legend = [
-        mpatches.Patch(facecolor=CYTOBAND_COLORS[s], edgecolor="black", label=s)
-        for s in ("gneg", "gpos50", "gpos100", "acen", "gvar")
-    ]
-    leg1 = ax.legend(
-        handles=cyto_legend, loc="upper center",
-        bbox_to_anchor=(0.5, -0.04),
-        fontsize=7, frameon=True, framealpha=0.85,
-        edgecolor="#cccccc", ncols=5, title="cytoband",
-    )
-    ax.add_artist(leg1)
-
-    type_handles = [
-        mpatches.Patch(facecolor=SV_TYPE_COLOR[t], edgecolor="black",
-                       label=f"{t} {n_svs_by_type.get(t, 0):,}")
-        for t in SV_TYPES
-    ]
-    type_handles.append(plt.Line2D([0], [0], color=NOISE_COLOR,
-                                    linestyle=(0, (3, 2)), linewidth=1.4,
-                                    label="BND noise"))
-    leg2 = ax.legend(
-        handles=type_handles, loc="upper center",
-        bbox_to_anchor=(0.5, -0.10),
-        fontsize=7, frameon=True, framealpha=0.85,
-        edgecolor="#cccccc", ncols=5,
-        title=f"SV density per {bin_mb} Mb bin "
-              f"(alpha saturates at the 99th-percentile bin)",
-    )
-    ax.add_artist(leg2)
-
-    sm = plt.cm.ScalarMappable(cmap=VAF_CMAP, norm=VAF_NORM)
-    sm.set_array([])
-    cbar = fig.colorbar(sm, ax=ax, fraction=0.022, pad=0.02)
-    cbar.set_label("BND VAF", fontsize=9)
-    _style_vaf_colorbar(cbar)
-
-
-def plot_genome_sv_map(
-    bnds_unique: list[BND],
-    svs: list[SV],
-    contigs: dict[str, int],
-    cytobands: dict,
-    out_path: Path,
-    *,
-    bin_size: int = 1_000_000,
-) -> None:
-    """Render the genome SV map (cytobands + density strips + BND arcs).
-
-    Parameters
-    ----------
-    bnds_unique : list[BND]
-        BNDs (deduplicated, noise-annotated) to overlay as arcs.
-    svs : list[SV]
-        Non-BND SVs. Already size-filtered upstream (`--min-svlen`);
-        here we additionally drop non-PASS and noise-flagged events.
-    contigs : dict[str, int]
-        Chromosome lengths.
-    cytobands : dict
-        Loaded by :func:`load_cytobands`.
-    out_path : Path
-        PNG output path.
-    bin_size : int, optional
-        Density-track bin width in bp (default 1,000,000).
-    """
-    chroms_present, svs_filt, bins_cache, type_anchor = _sv_density(
-        svs, contigs, bin_size,
-    )
-    n = len(chroms_present)
-
-    fig, ax = plt.subplots(figsize=(17, 14))
-
-    chr_h = 0.28
-    strip_h = 0.13
-    inter_row_gap = 0.06
-    row_h = chr_h + len(SV_TYPES) * strip_h + inter_row_gap
-
-    chr_index = {c: i for i, c in enumerate(chroms_present)}
-    y_for = {c: (n - i - 1) * row_h for i, c in enumerate(chroms_present)}
-    max_len = max(contigs[c] for c in chroms_present)
-
-    for c in chroms_present:
-        _draw_chromosome_row(
-            ax, c, y_for[c], chr_h, strip_h,
-            contigs[c], cytobands, bins_cache[c], type_anchor, max_len,
-        )
-
-    _draw_bnd_arcs(
-        ax, bnds_unique, chr_index, y_for,
-        chr_h, strip_h, row_h, max_len,
-    )
-
-    n_svs_by_type = {t: sum(1 for s in svs_filt if s.svtype == t) for t in SV_TYPES}
-    _add_genome_map_decor(
-        fig, ax, n_svs_by_type, bin_size, max_len, n, row_h,
-    )
-
-    # The two legends sit BELOW the axes via bbox_to_anchor; tight-cropping
-    # needs them explicitly listed or it can omit entries that overflow.
-    from matplotlib.legend import Legend
-    extra = list(ax.findobj(Legend))
-    fig.set_facecolor(PAPER_BG)
-    ax.set_facecolor(PAPER_BG)
-    fig.savefig(out_path, dpi=200, bbox_inches="tight",
-                 bbox_extra_artists=extra, facecolor=fig.get_facecolor())
-    plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -3373,7 +3154,6 @@ _HTML_REPORT_CSS = _HTML_REPORT_CSS.replace("__PAPER_BG__", PAPER_BG)
 def make_html_report(
     sample: str,
     circos_png: bytes,
-    sv_map_png: bytes,
     out_path: Path,
     *,
     bd: dict,
@@ -3389,13 +3169,12 @@ def make_html_report(
 ) -> None:
     """Write a single-file, self-contained HTML report to ``out_path``.
 
-    Embeds both PNGs as base64 data URIs (so the file works when
+    Embeds the circos PNG as a base64 data URI (so the file works when
     emailed or copied around) plus a collapsible run-metadata block
     at the bottom (caller, filter, coverage thresholds, noise
     breakdown). No external CSS / JS / font dependencies.
     """
     circos_uri = "data:image/png;base64," + base64.b64encode(circos_png).decode("ascii")
-    sv_map_uri = "data:image/png;base64," + base64.b64encode(sv_map_png).decode("ascii")
 
     sv_summary = " · ".join(
         f"{t}={sv_bd[t]['pass']}"
@@ -3430,9 +3209,6 @@ def make_html_report(
         f"<section class=\"figure\" id=\"fig-circos\">\n"
         f"  <img src=\"{circos_uri}\" alt=\"circos plot for {sample_e}\">\n"
         f"</section>\n"
-        f"<section class=\"figure\" id=\"fig-svmap\">\n"
-        f"  <img src=\"{sv_map_uri}\" alt=\"genome SV map for {sample_e}\">\n"
-        f"</section>\n"
         f"<details class=\"meta\">\n"
         f"  <summary>run metadata</summary>\n"
         f"  <div class=\"chips\">\n"
@@ -3447,9 +3223,7 @@ def make_html_report(
         f"</details>\n"
         f"<footer>generated by <code>molamola</code> "
         f"&middot; circos via "
-        f"<a href=\"https://github.com/moshi4/pyCirclize\">pyCirclize</a> "
-        f"&middot; genome SV map via "
-        f"<a href=\"https://matplotlib.org/\">matplotlib</a></footer>\n"
+        f"<a href=\"https://github.com/moshi4/pyCirclize\">pyCirclize</a></footer>\n"
         "</body></html>\n"
     )
     out_path.write_text(html)
@@ -3653,7 +3427,7 @@ def _add_sv_args(p) -> None:
                         "downstream consumer. BNDs are unaffected. "
                         "Default 50; set 0 to disable.")
     p.add_argument("--bin-size", type=int, default=1_000_000,
-                   help="bin width (bp) for genome SV map density tracks "
+                   help="bin width (bp) for the circos SV density rings "
                         "(default 1,000,000)")
     p.add_argument("--plotvaf", action="store_true",
                    help="print each BND's VAF as a percentage next to its "
@@ -4001,20 +3775,16 @@ def plot_main(args: argparse.Namespace) -> int:
           f"acrocentric={bd['acrocentric']}, cov_anomaly={bd['cov_anomaly']}, "
           f"any_noise={bd['any_noise']}")
 
-    # Render both figures into in-memory PNG buffers — no temp files.
+    # Render the circos into an in-memory PNG buffer — no temp files.
     circos_buf = io.BytesIO()
     plot_circos(unique_bnds, svs, contigs, cytoband_file,
                 circos_buf, sample,
                 plot_vaf=args.plotvaf, bin_size=args.bin_size)
-    sv_map_buf = io.BytesIO()
-    plot_genome_sv_map(unique_bnds, svs, contigs, cytobands,
-                        sv_map_buf, bin_size=args.bin_size)
 
     out_html = out_dir / f"{sample}{focus_tag}.report.html"
     make_html_report(
         sample=sample,
         circos_png=circos_buf.getvalue(),
-        sv_map_png=sv_map_buf.getvalue(),
         out_path=out_html,
         bd=bd,
         sv_bd=sv_bd,
@@ -4031,11 +3801,8 @@ def plot_main(args: argparse.Namespace) -> int:
     if args.png:
         base = out_html.stem
         circos_path = out_dir / f"{base}.circos.png"
-        sv_map_path = out_dir / f"{base}.sv_map.png"
         circos_path.write_bytes(circos_buf.getvalue())
-        sv_map_path.write_bytes(sv_map_buf.getvalue())
         print(f"wrote {circos_path}")
-        print(f"wrote {sv_map_path}")
     return 0
 
 
