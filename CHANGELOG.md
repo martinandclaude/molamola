@@ -3,6 +3,12 @@
 All notable changes to molamola are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **The SV density legends no longer print a "peak N" per type.** The number was the busiest single 1 Mb bin, and it was the top of the colour scale until v0.6.0 moved the alpha ramp to a 99th-percentile anchor. After that it sat directly beside a legend title saying the scale saturates somewhere else — for INS on a typical genome, `peak 67` next to a scale that in fact saturates at 35, with ~1 % of bins clipping. A number that contradicts the title it sits under is worse than no number, and the peak was not otherwise helping a reader decode the ink. Entries now carry the per-type event count only, on both the circos rings and the linear map's strips. `type_peak` is no longer computed or threaded through the plotting chain.
+
 ## [0.6.0] — 2026-08-30
 
 ### Removed

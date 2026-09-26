@@ -2649,10 +2649,6 @@ def _bin_sv_counts(
     -------
     bins_cache : dict[str, dict[str, np.ndarray]]
         ``{chrom: {svtype: counts_array}}``.
-    type_peak : dict[str, float]
-        True max bin-count per SV type. Reported in the legends - a
-        reader asking "how dense does this get" wants the real peak,
-        not the saturation point.
     type_anchor : dict[str, float]
         Bin-count at which the alpha ramp saturates, the
         :data:`SV_DENSITY_ANCHOR_PCT` percentile of the non-empty bins.
@@ -2661,7 +2657,6 @@ def _bin_sv_counts(
         chr21, which is the opposite of what a density track is for.
     """
     bins_cache: dict = {c: {} for c in svs_per_chrom}
-    type_peak: dict[str, float] = {t: 1.0 for t in SV_TYPES}
     for c, chr_svs in svs_per_chrom.items():
         L = contigs[c]
         n_bins = (L // bin_size) + 1
@@ -2674,8 +2669,6 @@ def _bin_sv_counts(
                 if 0 <= b < n_bins:
                     counts[b] += 1
             bins_cache[c][t] = counts
-            if counts.size and counts.max() > type_peak[t]:
-                type_peak[t] = float(counts.max())
 
     type_anchor: dict[str, float] = {}
     for t in SV_TYPES:
@@ -2686,14 +2679,14 @@ def _bin_sv_counts(
             float(np.percentile(occupied, SV_DENSITY_ANCHOR_PCT))
             if occupied.size else 1.0
         )
-    return bins_cache, type_peak, type_anchor
+    return bins_cache, type_anchor
 
 
 def _sv_density(
     svs: list[SV],
     contigs: dict[str, int],
     bin_size: int,
-) -> tuple[list[str], list[SV], dict, dict[str, float], dict[str, float]]:
+) -> tuple[list[str], list[SV], dict, dict[str, float]]:
     """Bin the plottable non-BND SVs for the circos and the linear map.
 
     Both figures show the same density signal, so both must apply the
@@ -2706,18 +2699,17 @@ def _sv_density(
     are meant to point the eye at candidate signal, and a repeat-collapse
     hotspot is exactly the thing that would otherwise dominate them.
 
-    Returns ``(chroms_present, svs_filt, bins_cache, type_peak,
-    type_anchor)``.
+    Returns ``(chroms_present, svs_filt, bins_cache, type_anchor)``.
     """
     chroms_present = [c for c in CHROM_ORDER if c in contigs]
     svs_filt = [s for s in svs if s.is_pass and not s.is_noise]
     svs_per_chrom = {
         c: [s for s in svs_filt if s.chrom == c] for c in chroms_present
     }
-    bins_cache, type_peak, type_anchor = _bin_sv_counts(
+    bins_cache, type_anchor = _bin_sv_counts(
         svs_per_chrom, contigs, bin_size,
     )
-    return chroms_present, svs_filt, bins_cache, type_peak, type_anchor
+    return chroms_present, svs_filt, bins_cache, type_anchor
 
 
 def sv_density_alpha(counts, anchor: float, svtype: str | None = None):
@@ -2910,10 +2902,17 @@ def _draw_sv_density_rings(
 def _add_circos_legend(
     fig,
     n_svs_by_type: dict[str, int],
-    type_peak: dict[str, float],
     bin_size: int,
 ):
     """Attach the ring legend to the circos figure.
+
+    Entries carry the per-type event count and nothing else. They used
+    to also carry the busiest bin ("peak N"), which was the top of the
+    colour scale until the ramp moved to a 99th-percentile anchor -
+    after that the number sat beside a title saying the scale saturates
+    somewhere else, which is worse than no number at all. The legend's
+    job here is to say which ring is which type and how many events it
+    holds; the alpha ramp is described in the title.
 
     Only the rings are keyed here. The cytoband greyscale and the
     grey/dashed noise-arc style are both explained by the linear genome
@@ -2932,7 +2931,7 @@ def _add_circos_legend(
     handles = [
         mpatches.Patch(
             facecolor=SV_TYPE_COLOR[t], edgecolor="none",
-            label=f"{t}  {n_svs_by_type.get(t, 0):,}  (peak {int(type_peak[t])})",
+            label=f"{t}  {n_svs_by_type.get(t, 0):,}",
         )
         for t in CIRCOS_SV_RING_ORDER
     ]
@@ -3045,7 +3044,7 @@ def plot_circos(
             label_orientation="vertical",
         )
 
-    _, svs_filt, bins_cache, type_peak, type_anchor = _sv_density(
+    _, svs_filt, bins_cache, type_anchor = _sv_density(
         svs, contigs, bin_size,
     )
     _draw_sv_density_rings(circos, contigs, bins_cache, type_anchor, bin_size)
@@ -3122,7 +3121,7 @@ def plot_circos(
     cb = fig.colorbar(sm, cax=cax, label="VAF")
     _style_vaf_colorbar(cb)
 
-    legend = _add_circos_legend(fig, n_svs_by_type, type_peak, bin_size)
+    legend = _add_circos_legend(fig, n_svs_by_type, bin_size)
 
     fig.set_facecolor(PAPER_BG)
     fig.savefig(out_path, dpi=200, bbox_inches="tight",
@@ -3248,7 +3247,6 @@ def _add_genome_map_decor(
     ax,
     sample: str,
     breakdown: dict,
-    type_peak: dict[str, float],
     n_svs_by_type: dict[str, int],
     n_total: int,
     n_pass: int,
@@ -3284,7 +3282,7 @@ def _add_genome_map_decor(
 
     type_handles = [
         mpatches.Patch(facecolor=SV_TYPE_COLOR[t], edgecolor="black",
-                       label=f"{t} (peak {int(type_peak[t])})")
+                       label=f"{t} {n_svs_by_type.get(t, 0):,}")
         for t in SV_TYPES
     ]
     type_handles.append(plt.Line2D([0], [0], color=NOISE_COLOR,
@@ -3351,7 +3349,7 @@ def plot_genome_sv_map(
         The current `--min-svlen` value; used in the figure title for
         annotation only (the actual filtering is applied upstream).
     """
-    chroms_present, svs_filt, bins_cache, type_peak, type_anchor = _sv_density(
+    chroms_present, svs_filt, bins_cache, type_anchor = _sv_density(
         svs, contigs, bin_size,
     )
     n = len(chroms_present)
@@ -3380,7 +3378,7 @@ def plot_genome_sv_map(
 
     n_svs_by_type = {t: sum(1 for s in svs_filt if s.svtype == t) for t in SV_TYPES}
     _add_genome_map_decor(
-        fig, ax, sample, breakdown, type_peak, n_svs_by_type,
+        fig, ax, sample, breakdown, n_svs_by_type,
         n_total, n_pass, filter_label,
         bin_size, min_svlen, max_len, n, row_h,
     )

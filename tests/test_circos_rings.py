@@ -166,7 +166,7 @@ def test_density_drops_non_pass_and_noise(make_sv):
     noisy = make_sv(chrom="chr1", start=3_000, svtype="DEL")
     noisy.noise_flags.add("cov_anomaly")
 
-    _, svs_filt, _, _, _ = mm._sv_density(
+    _, svs_filt, _, _ = mm._sv_density(
         [keep, dropped_filter, noisy], {"chr1": 10_000_000}, 1_000_000,
     )
     assert svs_filt == [keep]
@@ -178,17 +178,16 @@ def test_density_and_linear_map_share_one_normalisation(make_sv):
            for i in range(7)]
     contigs = {"chr1": 10_000_000}
 
-    _, _, bins_a, peak_a, anchor_a = mm._sv_density(svs, contigs, 1_000_000)
-    _, _, bins_b, peak_b, anchor_b = mm._sv_density(svs, contigs, 1_000_000)
-    assert peak_a == peak_b
+    _, _, bins_a, anchor_a = mm._sv_density(svs, contigs, 1_000_000)
+    _, _, bins_b, anchor_b = mm._sv_density(svs, contigs, 1_000_000)
     assert anchor_a == anchor_b
     assert np.array_equal(bins_a["chr1"]["DEL"], bins_b["chr1"]["DEL"])
-    assert peak_a["DEL"] == 7.0
+    assert bins_a["chr1"]["DEL"].max() == 7.0
 
 
 def test_density_restricts_to_canonical_chroms(make_sv):
     off = make_sv(chrom="chrUn_KI270302v1", start=100, svtype="INS")
-    chroms, _, bins, _, _ = mm._sv_density(
+    chroms, _, bins, _ = mm._sv_density(
         [off], {"chr1": 10_000_000}, 1_000_000,
     )
     assert chroms == ["chr1"]
@@ -207,10 +206,11 @@ def test_anchor_ignores_a_single_outlier_bin(make_sv):
            for i in range(20)]
     svs += [make_sv(chrom="chr1", start=50_000_000 + i, svtype="DEL")
             for i in range(50)]
-    _, _, _, peak, anchor = mm._sv_density(svs, {"chr1": 100_000_000},
-                                           1_000_000)
-    assert peak["DEL"] == 50.0
-    assert anchor["DEL"] < peak["DEL"]
+    _, _, bins, anchor = mm._sv_density(svs, {"chr1": 100_000_000},
+                                        1_000_000)
+    peak = bins["chr1"]["DEL"].max()
+    assert peak == 50.0
+    assert anchor["DEL"] < peak
 
 
 def test_anchor_is_genome_wide_not_per_chromosome(make_sv):
@@ -220,7 +220,7 @@ def test_anchor_is_genome_wide_not_per_chromosome(make_sv):
             for i in range(30)]
            + [make_sv(chrom="chr2", start=0, svtype="INS") for _ in range(9)])
     contigs = {"chr1": 100_000_000, "chr2": 100_000_000}
-    _, _, bins, _, anchor = mm._sv_density(svs, contigs, 1_000_000)
+    _, _, bins, anchor = mm._sv_density(svs, contigs, 1_000_000)
 
     a1 = mm.sv_density_alpha(bins["chr1"]["INS"], anchor["INS"])
     a2 = mm.sv_density_alpha(bins["chr2"]["INS"], anchor["INS"])
@@ -232,9 +232,22 @@ def test_anchor_is_genome_wide_not_per_chromosome(make_sv):
 
 
 def test_anchor_defaults_sanely_with_no_events():
-    _, _, _, peak, anchor = mm._sv_density([], {"chr1": 10_000_000}, 1_000_000)
-    assert all(v == 1.0 for v in peak.values())
+    _, _, _, anchor = mm._sv_density([], {"chr1": 10_000_000}, 1_000_000)
     assert all(v == 1.0 for v in anchor.values())
+
+
+def test_legend_entries_carry_counts_not_a_scale_number(make_sv, make_bnd,
+                                                        bundled_cytoband):
+    """"peak N" used to sit in the legend as the top of the colour scale.
+
+    Once the ramp moved to a 99th-percentile anchor that number no longer
+    described the scale, so it was removed rather than left to contradict
+    the legend's own title.
+    """
+    import inspect
+    assert "type_peak" not in inspect.signature(mm._add_circos_legend).parameters
+    src = inspect.getsource(mm._add_circos_legend)
+    assert "peak" not in src.split('"""')[2]
 
 
 def test_ramp_spreads_a_skewed_distribution_wider_than_peak_anchoring():
