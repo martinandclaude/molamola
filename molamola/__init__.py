@@ -2344,7 +2344,10 @@ def iscn_label(event, cytobands: dict) -> str:
 
     Forms produced (without the leading karyotype prefix):
 
-    - ``BND``: ``t(7;17)(q11.23;q12)`` - canonical chromosome ordering.
+    - ``BND``: ``7q11.23::17q12`` - one junction, canonical chromosome
+      ordering. Not ``t(7;17)(q11.23;q12)``: a single BND record does not
+      show the event is balanced, and ISCN's ``t`` asserts that. Paired
+      events are named by :func:`rearrangement_label`.
     - ``DEL`` / ``DUP`` / ``INV``: ``del(7)(q11.23q12.2)`` (start band
       to end band; collapsed to a single band when both ends are in the
       same band).
@@ -2366,7 +2369,7 @@ def iscn_label(event, cytobands: dict) -> str:
         n2 = c2.replace("chr", "")
         b1 = resolve_cytoband(c1, p1, cytobands) or "?"
         b2 = resolve_cytoband(c2, p2, cytobands) or "?"
-        return f"t({n1};{n2})({b1};{b2})"
+        return f"{n1}{b1}::{n2}{b2}"
 
     n = event.chrom.replace("chr", "")
     b1 = resolve_cytoband(event.chrom, event.start, cytobands) or "?"
@@ -2531,6 +2534,424 @@ def noise_breakdown(bnds: list[BND]) -> dict:
         "cov_anomaly": sum(1 for b in bnds if "cov_anomaly" in b.noise_flags),
         "any_noise": sum(1 for b in bnds if b.is_noise),
     }
+
+
+# ---------------------------------------------------------------------------
+# Rearrangement junctions (balanced-event classifier)
+# ---------------------------------------------------------------------------
+#
+# A BND record describes one *junction*: two breakpoints joined, each
+# keeping the sequence on one side of it. A balanced translocation leaves
+# two junctions - one on each derivative - that sit close together at
+# both breakpoints and keep *opposite* sides at both. Artefacts almost
+# always leave one. Measured 2026-09-26 on ten normal call sets (hg38
+# and T2T; Sniffles2 2.7.5 / 2.8.0 and cuteSV 2.1.3): the ~100-150
+# junctions per genome become 0-1 translocation candidates and 0-6
+# inversion candidates under the tiers below. The classifier never hides
+# anything: the exclusion mask covers 40 % of hg38 and would catch 7-24 %
+# of typical recurrent leukaemia fusions (and all P2RY8::CRLF2 / DUX4
+# events), so a masked pair is drawn fainter, not dropped.
+
+#: Two junctions pair when both of their ends sit within this distance.
+#: Real reciprocal junctions are usually bp-to-kb apart; the window is
+#: wide so that small deletions or duplications at a breakpoint do not
+#: break the pair. Widening it from 10 kb to 1 Mb added no pairs in the
+#: normals it was measured on.
+JUNCTION_PAIR_WINDOW: int = 100_000
+
+#: Two records within this distance at both ends, keeping the *same*
+#: sides, are one junction reported twice (cuteSV writes each mate as
+#: its own record, with coordinates a few bp apart: on one hg38 genome,
+#: 147 records were 112 junctions).
+JUNCTION_SAME_WINDOW: int = 1_000
+
+#: Intrachromosomal junctions and INV records shorter than this are left
+#: out. Small inversions are common polymorphisms; the events a
+#: karyotype is read for - inv(16), inv(3) - span tens of Mb.
+JUNCTION_MIN_INTRA_SPAN: int = 1_000_000
+
+#: A breakpoint within this distance of an acen / gvar / stalk band is
+#: pericentromeric. Whole-arm and Robertsonian events land here, as do
+#: the bulk of normal-genome artefacts.
+JUNCTION_PERICENTROMERIC_PAD: int = 2_000_000
+
+#: Slack around the exclusion mask when asking whether a breakpoint is
+#: in it. Zero, and it has to stay small: the mask is stored as
+#: fragmented 500 bp runs, so padding inflates it fast - 40 % of hg38 at
+#: 0 bp, 84 % at 1 kb, 99 % at 5 kb. At 1 kb the "all breakpoints
+#: masked" rule would demote 60-93 % of recurrent leukaemia fusions
+#: (breakpoints uniform over MANE gene bodies) instead of 7-24 %.
+JUNCTION_MASK_PAD: int = 0
+
+#: Longest donor segment accepted for an insertion-like pair. ins(11;9)
+#: moves a few Mb; beyond this, two unrelated junctions sharing a
+#: chromosome pair are more likely than one insertion.
+JUNCTION_MAX_INSERT: int = 20_000_000
+
+#: Mobile-element signature. A non-reference L1 / Alu / SVA copy in
+#: the sample aligns partly to a reference copy elsewhere, so it shows
+#: up as two junctions to another chromosome that look reciprocal: tight
+#: at the insertion site (a 7-20 bp target-site duplication, or a small
+#: deletion) and, at the reference copy, bounding a shared segment the
+#: length of the element (Alu ~300 bp, SVA ~2 kb, L1 up to ~6 kb, more
+#: with 3' transduction). Measured 2026-09-26: 6 of the 7 translocation
+#: pairs left in ten normal call sets had this shape (recipient end
+#: 6-82 bp, donor end 5.8-13.2 kb) - polymorphic insertions, not
+#: translocations. A real translocation with a kb-scale duplication at
+#: exactly one breakpoint would also match; it is demoted, not hidden.
+JUNCTION_TE_RECIPIENT_MAX: int = 100
+JUNCTION_TE_SEGMENT: tuple[int, int] = (100, 15_000)
+
+#: Heterochromatic / centromeric stains that count as pericentromeric.
+_PERICENTROMERIC_STAINS: frozenset[str] = frozenset({"acen", "gvar", "stalk"})
+
+#: Which side of each breakpoint a BND junction keeps, read off the
+#: orientation code :func:`parse_alt_for_mate` returns. First character:
+#: ``+`` means the replacement base precedes the bracket, so the record's
+#: own position keeps the sequence to its left; ``-`` keeps the right.
+#: Second character: ``+`` (bracket ``[``) joins the sequence to the
+#: right of the mate position, ``-`` (bracket ``]``) the left.
+_NEAR_SIDE: dict[str, str] = {"+": "L", "-": "R"}
+_MATE_SIDE: dict[str, str] = {"+": "R", "-": "L"}
+_FLIP_SIDE: dict[str, str] = {"L": "R", "R": "L"}
+
+
+@dataclass
+class Junction:
+    """One rearrangement junction: breakpoint A joined to breakpoint B.
+
+    Ends are ordered so that A precedes B (chromosome order, then
+    position). ``side_a`` / ``side_b`` say which side of each breakpoint
+    the junction keeps: ``"L"`` for the sequence to its left, ``"R"`` to
+    its right.
+    """
+
+    chr_a: str
+    pos_a: int
+    side_a: str
+    chr_b: str
+    pos_b: int
+    side_b: str
+    support: int
+    vaf: float
+    sv_ids: tuple
+    noise_flags: frozenset = frozenset()
+    source: str = "BND"
+
+    @property
+    def is_intra(self) -> bool:
+        return self.chr_a == self.chr_b
+
+
+def _ordered_junction(c1, p1, s1, c2, p2, s2, **kw) -> Junction:
+    i1 = CHROM_ORDER.index(c1)
+    i2 = CHROM_ORDER.index(c2)
+    if (i1, p1) <= (i2, p2):
+        return Junction(c1, p1, s1, c2, p2, s2, **kw)
+    return Junction(c2, p2, s2, c1, p1, s1, **kw)
+
+
+def junction_from_bnd(b: BND) -> Junction:
+    """The junction a BND record describes, in canonical end order."""
+    return _ordered_junction(
+        b.chr1, b.pos1, _NEAR_SIDE[b.orientation[0]],
+        b.chr2, b.pos2, _MATE_SIDE[b.orientation[1]],
+        support=b.support, vaf=b.vaf, sv_ids=(b.sv_id,),
+        noise_flags=frozenset(b.noise_flags),
+    )
+
+
+def junctions_from_inv(sv: SV) -> tuple[Junction, Junction]:
+    """The two junctions an INV record implies.
+
+    Reversing ``[start, end]`` joins the left of ``start`` to the left of
+    ``end`` (sides L, L) and the right of ``start`` to the right of
+    ``end`` (R, R) - a reciprocal pair by construction. Whether the
+    caller actually observed both junctions is not recorded in the VCF.
+    """
+    kw = dict(support=sv.support, vaf=sv.vaf, sv_ids=(sv.sv_id,),
+              noise_flags=frozenset(sv.noise_flags), source="INV")
+    return (Junction(sv.chrom, sv.start, "L", sv.chrom, sv.end, "L", **kw),
+            Junction(sv.chrom, sv.start, "R", sv.chrom, sv.end, "R", **kw))
+
+
+def collect_junctions(bnds: list[BND], svs: list[SV]) -> list[Junction]:
+    """Junctions from BND records plus large INV records, deduplicated.
+
+    Only canonical chromosomes. Intrachromosomal BNDs and INV records
+    shorter than :data:`JUNCTION_MIN_INTRA_SPAN` are left out. Records
+    describing the same junction (same sides, both ends within
+    :data:`JUNCTION_SAME_WINDOW`) merge into one, keeping the highest
+    support and every record ID.
+    """
+    raw: list[Junction] = []
+    for b in bnds:
+        if b.chr1 not in CHROM_SET or b.chr2 not in CHROM_SET:
+            continue
+        j = junction_from_bnd(b)
+        if j.is_intra and j.pos_b - j.pos_a < JUNCTION_MIN_INTRA_SPAN:
+            continue
+        raw.append(j)
+    for s in svs:
+        if (s.svtype == "INV" and s.chrom in CHROM_SET
+                and s.end - s.start >= JUNCTION_MIN_INTRA_SPAN):
+            raw.extend(junctions_from_inv(s))
+
+    merged: list[Junction] = []
+    for j in sorted(raw, key=lambda j: -j.support):
+        for m in merged:
+            if (m.source == j.source == "BND"
+                    and m.chr_a == j.chr_a and m.chr_b == j.chr_b
+                    and m.side_a == j.side_a and m.side_b == j.side_b
+                    and abs(m.pos_a - j.pos_a) <= JUNCTION_SAME_WINDOW
+                    and abs(m.pos_b - j.pos_b) <= JUNCTION_SAME_WINDOW):
+                m.sv_ids = m.sv_ids + j.sv_ids
+                m.noise_flags = m.noise_flags | j.noise_flags
+                break
+        else:
+            merged.append(j)
+    return merged
+
+
+def load_mask_intervals(path: Path) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Read a BED mask into merged, sorted ``(starts, ends)`` per chrom."""
+    df = pd.read_csv(path, sep="\t", header=None, usecols=[0, 1, 2],
+                     names=["chrom", "start", "end"], comment="#",
+                     dtype={"chrom": str, "start": np.int64, "end": np.int64})
+    df["chrom"] = df["chrom"].map(_normalize_chrom)
+    out: dict = {}
+    for chrom, g in df.groupby("chrom", sort=False):
+        s = g["start"].to_numpy()
+        e = g["end"].to_numpy()
+        order = np.argsort(s, kind="stable")
+        s, e = s[order], np.maximum.accumulate(e[order])
+        # merge runs that touch or overlap
+        new_run = np.r_[True, s[1:] > e[:-1]]
+        idx = np.flatnonzero(new_run)
+        out[chrom] = (s[idx], np.maximum.reduceat(e, idx))
+    return out
+
+
+def in_mask(mask: dict, chrom: str, pos: int, pad: int = 0) -> bool:
+    """True iff ``pos`` lies within ``pad`` bp of a mask interval."""
+    if chrom not in mask:
+        return False
+    starts, ends = mask[chrom]
+    i = int(np.searchsorted(starts, pos + pad, side="right")) - 1
+    return i >= 0 and ends[i] >= pos - pad
+
+
+def is_pericentromeric(chrom: str, pos: int, cytobands: dict,
+                       pad: int | None = None) -> bool:
+    """True iff ``pos`` is within ``pad`` of an acen / gvar / stalk band
+    (default :data:`JUNCTION_PERICENTROMERIC_PAD`)."""
+    if pad is None:
+        pad = JUNCTION_PERICENTROMERIC_PAD
+    return any(
+        s - pad <= pos < e + pad
+        for s, e, _name, stain in cytobands.get(chrom, [])
+        if stain in _PERICENTROMERIC_STAINS
+    )
+
+
+@dataclass
+class Rearrangement:
+    """A classified group of junctions.
+
+    ``kind`` is ``"translocation"`` (reciprocal, two chromosomes),
+    ``"inversion"`` (reciprocal, one chromosome), ``"insertion"`` (one
+    end paired, the other end spanning a donor segment), ``"reciprocal"``
+    (reciprocal, one chromosome, but not an inversion's side pattern) or
+    ``"single"`` (an unpaired junction).
+
+    ``tier`` drives display emphasis only:
+
+    - ``"candidate"`` - paired, no noise flag, no breakpoint
+      pericentromeric, and not every breakpoint in the exclusion mask;
+    - ``"repeat"`` - paired, but failing one of those (``reasons`` says
+      which);
+    - ``"single"`` - unpaired. Unbalanced events are singles by nature;
+      they are the karyogram's job.
+    """
+
+    kind: str
+    junctions: tuple
+    tier: str
+    reasons: tuple = ()
+
+    @property
+    def support(self) -> int:
+        return min(j.support for j in self.junctions)
+
+    @property
+    def vafs(self) -> tuple[float, ...]:
+        return tuple(j.vaf for j in self.junctions)
+
+    def breakpoints(self) -> list[tuple[str, int]]:
+        """One ``(chrom, pos)`` per breakpoint region, A-side first."""
+        pts: list[tuple[str, int]] = []
+        for j in self.junctions:
+            for c, p in ((j.chr_a, j.pos_a), (j.chr_b, j.pos_b)):
+                if not any(c == c2 and abs(p - p2) <= JUNCTION_PAIR_WINDOW
+                           for c2, p2 in pts):
+                    pts.append((c, p))
+        return pts
+
+
+def _reciprocal(j: Junction, k: Junction) -> bool:
+    return (j.chr_a == k.chr_a and j.chr_b == k.chr_b
+            and k.side_a == _FLIP_SIDE[j.side_a]
+            and k.side_b == _FLIP_SIDE[j.side_b]
+            and abs(j.pos_a - k.pos_a) <= JUNCTION_PAIR_WINDOW
+            and abs(j.pos_b - k.pos_b) <= JUNCTION_PAIR_WINDOW)
+
+
+def _ends(j: Junction, k: Junction, end: str):
+    """``(offset, lower (pos, side), upper (pos, side))`` at one end."""
+    lo, hi = sorted([(getattr(j, "pos_" + end), getattr(j, "side_" + end)),
+                     (getattr(k, "pos_" + end), getattr(k, "side_" + end))])
+    return hi[0] - lo[0], lo, hi
+
+
+def _mobile_element_like(j: Junction, k: Junction) -> bool:
+    """A translocation-looking pair with the mobile-element shape: see
+    :data:`JUNCTION_TE_RECIPIENT_MAX`."""
+    if j.is_intra:
+        return False
+    for rec, don in (("a", "b"), ("b", "a")):
+        rec_off, _, _ = _ends(j, k, rec)
+        don_off, lo, hi = _ends(j, k, don)
+        if (rec_off <= JUNCTION_TE_RECIPIENT_MAX
+                and lo[1] == "R" and hi[1] == "L"
+                and JUNCTION_TE_SEGMENT[0] <= don_off <= JUNCTION_TE_SEGMENT[1]):
+            return True
+    return False
+
+
+def _insertion(j: Junction, k: Junction) -> bool:
+    """One end shared with opposite sides (the recipient site), the other
+    two ends bounding a donor segment whose sequence both keep: the lower
+    donor breakpoint keeps its right, the upper its left."""
+    if j.is_intra or j.chr_a != k.chr_a or j.chr_b != k.chr_b:
+        return False
+    for rec, don in (("a", "b"), ("b", "a")):
+        rec_off, rlo, rhi = _ends(j, k, rec)
+        if rec_off > JUNCTION_PAIR_WINDOW or rlo[1] == rhi[1]:
+            continue
+        don_off, lo, hi = _ends(j, k, don)
+        if (JUNCTION_PAIR_WINDOW < don_off <= JUNCTION_MAX_INSERT
+                and lo[1] == "R" and hi[1] == "L"):
+            return True
+    return False
+
+
+def classify_rearrangements(
+    junctions: list[Junction],
+    cytobands: dict,
+    mask: dict | None,
+) -> list[Rearrangement]:
+    """Pair junctions into events and assign each a display tier.
+
+    Reciprocal pairs are taken first, closest pair first, then
+    insertion-like pairs among what is left; anything unpaired is a
+    single. ``mask`` is the exclusion mask from
+    :func:`load_mask_intervals`, or ``None`` to skip the mask rule.
+    """
+    free = list(junctions)
+    events: list[Rearrangement] = []
+
+    def take(test, kind_of):
+        pairs = []
+        for i, j in enumerate(free):
+            for k in free[i + 1:]:
+                if test(j, k):
+                    d = abs(j.pos_a - k.pos_a) + abs(j.pos_b - k.pos_b)
+                    pairs.append((d, id(j), id(k), j, k))
+        used: set[int] = set()
+        for _d, ij, ik, j, k in sorted(pairs, key=lambda t: t[0]):
+            if ij in used or ik in used:
+                continue
+            used.update((ij, ik))
+            events.append(Rearrangement(kind_of(j), (j, k), tier=""))
+        free[:] = [j for j in free if id(j) not in used]
+
+    def reciprocal_kind(j: Junction) -> str:
+        if not j.is_intra:
+            return "translocation"
+        return "inversion" if j.side_a == j.side_b else "reciprocal"
+
+    take(_reciprocal, reciprocal_kind)
+    take(_insertion, lambda j: "insertion")
+    events.extend(Rearrangement("single", (j,), tier="single") for j in free)
+
+    for ev in events:
+        if ev.kind == "single":
+            continue
+        reasons = []
+        if ev.kind == "translocation" and _mobile_element_like(*ev.junctions):
+            ev.kind = "insertion"
+            reasons.append("mobile-element-sized insertion")
+        if any(j.noise_flags for j in ev.junctions):
+            reasons.append("noise-flagged")
+        pts = ev.breakpoints()
+        if any(is_pericentromeric(c, p, cytobands) for c, p in pts):
+            reasons.append("pericentromeric")
+        if mask is not None and all(
+            any(in_mask(mask, jc, jp, JUNCTION_MASK_PAD)
+                for j in ev.junctions
+                for jc, jp in ((j.chr_a, j.pos_a), (j.chr_b, j.pos_b))
+                if jc == c and abs(jp - p) <= JUNCTION_PAIR_WINDOW)
+            for c, p in pts
+        ):
+            reasons.append("all breakpoints masked")
+        ev.reasons = tuple(reasons)
+        ev.tier = "repeat" if reasons else "candidate"
+    return events
+
+
+def rearrangement_label(ev: Rearrangement, cytobands: dict) -> str:
+    """ISCN-style name for a paired event; junction notation for a single.
+
+    A single junction is never written as ``t(A;B)``: one junction does
+    not show the event is balanced, and ISCN's ``t`` asserts it.
+    """
+    def band(c, p):
+        return resolve_cytoband(c, p, cytobands) or "?"
+
+    j = ev.junctions[0]
+    na, nb = j.chr_a.replace("chr", ""), j.chr_b.replace("chr", "")
+    if ev.kind == "translocation":
+        return f"t({na};{nb})({band(j.chr_a, j.pos_a)};{band(j.chr_b, j.pos_b)})"
+    if ev.kind in ("inversion", "reciprocal"):
+        prefix = "inv" if ev.kind == "inversion" else "rea"
+        return f"{prefix}({na})({band(j.chr_a, j.pos_a)}{band(j.chr_b, j.pos_b)})"
+    if ev.kind == "insertion":
+        # The recipient is the end where the two junctions coincide.
+        k = ev.junctions[1]
+        if _ends(j, k, "a")[0] <= _ends(j, k, "b")[0]:
+            rc, rp, dc = j.chr_a, j.pos_a, j.chr_b
+            d1, d2 = sorted((j.pos_b, k.pos_b))
+        else:
+            rc, rp, dc = j.chr_b, j.pos_b, j.chr_a
+            d1, d2 = sorted((j.pos_a, k.pos_a))
+        return (f"ins({rc.replace('chr', '')};{dc.replace('chr', '')})"
+                f"({band(rc, rp)};{band(dc, d1)}{band(dc, d2)})")
+    return (f"{na}{band(j.chr_a, j.pos_a)}::{nb}{band(j.chr_b, j.pos_b)} "
+            f"(single junction)")
+
+
+def rearrangement_summary(events: list[Rearrangement]) -> str:
+    """One-line tier count for stdout and the report metadata."""
+    cand = [e for e in events if e.tier == "candidate"]
+    kinds = ", ".join(
+        f"{sum(e.kind == k for e in cand)} {k}{'s' if sum(e.kind == k for e in cand) != 1 else ''}"
+        for k in ("translocation", "inversion", "insertion", "reciprocal")
+        if any(e.kind == k for e in cand)
+    )
+    return (f"{len(cand)} candidate{'' if len(cand) == 1 else 's'}"
+            + (f" ({kinds})" if kinds else "")
+            + f", {sum(e.tier == 'repeat' for e in events)} paired in repeats"
+            + f", {sum(e.tier == 'single' for e in events)} single junctions")
 
 
 # ---------------------------------------------------------------------------
@@ -3725,6 +4146,21 @@ def plot_main(args: argparse.Namespace) -> int:
         for b in unique_bnds:
             b.noise_flags.discard("cov_anomaly")
 
+    # Pair junctions into balanced-event candidates. Classified on the
+    # whole call set, before --focus narrows what is drawn, so a focused
+    # BND still finds its reciprocal partner.
+    inv_records = [s for s in svs if s.svtype == "INV"
+                   and (s.is_pass or args.filter == "all")]
+    events = classify_rearrangements(
+        collect_junctions(unique_bnds, inv_records), cytobands,
+        load_mask_intervals(find_mask_file(args.reference)),
+    )
+    print(f"Rearrangements: {rearrangement_summary(events)}")
+    event_label = {
+        sv_id: rearrangement_label(ev, cytobands)
+        for ev in events for j in ev.junctions for sv_id in j.sv_ids
+    }
+
     focus_tag = ""
     if args.focus:
         # Validate band foci early — typos should fail fast.
@@ -3741,9 +4177,9 @@ def plot_main(args: argparse.Namespace) -> int:
               f"(window +/-{args.focus_window} bp for positions; "
               f"band-range overlap for ISCN bands)")
         for b in unique_bnds:
-            iscn = iscn_label(b, cytobands)
+            label = event_label.get(b.sv_id) or iscn_label(b, cytobands)
             print(f"  match: {b.sv_id}  {b.chr1}:{b.pos1}  <->  {b.chr2}:{b.pos2}  "
-                  f"ISCN={iscn}  "
+                  f"event={label}  "
                   f"FILTER={b.filter_}  SUPPORT={b.support}  VAF={b.vaf:.3f}  "
                   f"noise={'+'.join(sorted(b.noise_flags)) or 'none'}")
         if not unique_bnds:

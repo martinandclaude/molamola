@@ -40,9 +40,11 @@ def test_iscn_label_bnd_canonical_order(make_bnd, bundled_cytoband):
     cyto = mm.load_cytobands(bundled_cytoband)
     b = make_bnd(chr1="chr7", pos1=73_000_000, chr2="chr17", pos2=22_000_000)
     label = mm.iscn_label(b, cyto)
-    # Should be t(7;17)(...) regardless of which side came first
-    assert label.startswith("t(7;17)(")
-    assert label.endswith(")")
+    # One BND record is one junction: named 7...::17..., never t(7;17),
+    # which would assert a balanced event nobody has shown.
+    assert label.startswith("7q")
+    assert "::17" in label
+    assert not label.startswith("t(")
 
 
 def test_iscn_label_bnd_swapped_ordering(make_bnd, bundled_cytoband):
@@ -51,7 +53,10 @@ def test_iscn_label_bnd_swapped_ordering(make_bnd, bundled_cytoband):
     swapped = make_bnd(chr1="chr17", pos1=22_000_000,
                         chr2="chr7",  pos2=73_000_000)
     label = mm.iscn_label(swapped, cyto)
-    assert label.startswith("t(7;17)(")
+    assert label == mm.iscn_label(
+        mm.BND(chr1="chr7", pos1=73_000_000, chr2="chr17", pos2=22_000_000,
+               orientation="++", support=1, vaf=0.5, filter_="PASS",
+               sv_id="x"), cyto)
 
 
 def test_iscn_label_del_uses_two_bands(make_sv, bundled_cytoband):

@@ -5,7 +5,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- **Rearrangement classifier (SV mode).** BND junctions, plus `INV` records of 1 Mb or more, are grouped into reciprocal translocations, inversions, insertions and single junctions, and each paired event gets a display tier: *candidate* or *paired in repeats* (noise-flagged, pericentromeric, every breakpoint in the exclusion mask, or a mobile-element-shaped pair). The run prints a one-line summary. Nothing is filtered or drawn differently yet. On ten normal call sets this takes ~100–150 junctions per genome down to 0–1 translocation candidates and 0–6 inversion candidates; a synthetic t(8;21) spiked into a real VCF comes out as `t(8;21)(q21.3;q22.12)`. The rules and their measured trade-offs are in `docs/FILTERS.md`.
+
 ### Changed
+
+- **A single BND is no longer called a translocation.** `--focus` used to print `ISCN=t(7;17)(q11.23;q12)` for every matched record, but one junction does not show the event is balanced, and ISCN's `t` asserts it. `--focus` now prints `event=` with the name of the event the record belongs to: `t(...)` only when both junctions were found, otherwise `7q11.23::17q12 (single junction)`. `iscn_label()` names a lone BND the same way.
 
 - **The circos now keys its own arcs and cytobands.** With the linear map gone (see Removed), the circos is the only SV figure, so it carries the keys the map used to hold: an arc key (solid = PASS coloured by VAF, grey dashed = noise-flagged, plus a dashed non-PASS entry when `--filter all` draws any) and a cytoband key with the circos's red centromere, alongside the existing density-ring key and VAF colorbar.
 - **VAF classes are named by range, not zygosity.** The colorbar used to write mosaic / het / hom inside its three bands. Those are germline readings: in a tumour sample a translocation's VAF tracks blast fraction and clonality, so a clonal event in a sample with 25 % blasts was labelled "mosaic". The classes are now 0-33 %, 33-66 % and 66-100 %, which the colorbar's edge ticks already state, so nothing is written inside the bands. Class edges and colours are unchanged.
