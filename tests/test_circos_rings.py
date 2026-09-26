@@ -263,27 +263,29 @@ def test_circos_keys_its_own_arcs_and_cytobands():
     import matplotlib.pyplot as plt
     fig = plt.figure()
     try:
-        rings, arcs, cyto = mm._add_circos_legends(
+        rings, arcs, cand, cyto = mm._add_circos_legends(
             fig, {"INS": 3, "DEL": 2, "DUP": 1, "INV": 0}, 1_000_000,
             any_non_pass=False,
         )
-        texts = _legend_texts([rings, arcs, cyto])
+        texts = _legend_texts([rings, arcs, cand, cyto])
     finally:
         plt.close(fig)
     assert texts[0] == ["INS  3", "DEL  2", "DUP  1", "INV  0"]
-    assert "noise-flagged" in texts[1]
-    assert not any("non-PASS" in t for t in texts[1])
-    assert "acen" in texts[2] and "gneg" in texts[2]
+    assert texts[1] == ["candidate: both junctions found",
+                        "paired, but in repeats", "single junction",
+                        "noise-flagged"]
+    assert texts[2] == ["none"]
+    assert "acen" in texts[3] and "gneg" in texts[3]
 
 
 def test_non_pass_key_appears_only_when_non_pass_arcs_are_drawn():
     import matplotlib.pyplot as plt
     fig = plt.figure()
     try:
-        _, arcs, _ = mm._add_circos_legends(
+        _, arcs, _, _ = mm._add_circos_legends(
             fig, {}, 1_000_000, any_non_pass=True,
         )
-        assert "non-PASS" in [t.get_text() for t in arcs.get_texts()]
+        assert "non-PASS (fainter)" in [t.get_text() for t in arcs.get_texts()]
     finally:
         plt.close(fig)
 
@@ -379,3 +381,14 @@ def test_circos_renders_with_plotvaf_and_rings(bundled_cytoband, make_bnd,
         contigs, bundled_cytoband, plot_vaf=True,
     )
     assert png.startswith(b"\x89PNG")
+
+
+def test_density_counts_only_plotted_chromosomes(make_sv):
+    """The ring legend counts what the rings show: a chromosome left out
+    by --only-sv-chroms, or a non-canonical contig, must not add to it."""
+    svs = [make_sv(chrom="chr1", start=1_000, svtype="DEL"),
+           make_sv(chrom="chr2", start=1_000, svtype="DEL"),
+           make_sv(chrom="chrUn_KI270302v1", start=100, svtype="DEL")]
+    _, svs_filt, _, _ = mm._sv_density(
+        svs, {"chr1": 10_000_000, "chrUn_KI270302v1": 50_000}, 1_000_000)
+    assert [s.chrom for s in svs_filt] == ["chr1"]

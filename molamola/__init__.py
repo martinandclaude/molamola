@@ -215,6 +215,9 @@ VAF_NORM = mcolors.BoundaryNorm(VAF_CLASS_EDGES, len(VAF_CLASS_COLORS))
 
 NOISE_COLOR: str = "#888888"
 
+#: Ink for the numbered candidate badges on the circos.
+INK_BADGE: str = "#1F2024"
+
 #: Radial span of the SV density ring stack on the circos, just inside
 #: the cytoband ring (95-100). Four rings share this band, one per SV
 #: type, so INS / DEL / DUP / INV each have their own track.
@@ -2637,6 +2640,7 @@ class Junction:
     sv_ids: tuple
     noise_flags: frozenset = frozenset()
     source: str = "BND"
+    is_pass: bool = True
 
     @property
     def is_intra(self) -> bool:
@@ -2657,7 +2661,7 @@ def junction_from_bnd(b: BND) -> Junction:
         b.chr1, b.pos1, _NEAR_SIDE[b.orientation[0]],
         b.chr2, b.pos2, _MATE_SIDE[b.orientation[1]],
         support=b.support, vaf=b.vaf, sv_ids=(b.sv_id,),
-        noise_flags=frozenset(b.noise_flags),
+        noise_flags=frozenset(b.noise_flags), is_pass=b.is_pass,
     )
 
 
@@ -2670,7 +2674,8 @@ def junctions_from_inv(sv: SV) -> tuple[Junction, Junction]:
     caller actually observed both junctions is not recorded in the VCF.
     """
     kw = dict(support=sv.support, vaf=sv.vaf, sv_ids=(sv.sv_id,),
-              noise_flags=frozenset(sv.noise_flags), source="INV")
+              noise_flags=frozenset(sv.noise_flags), source="INV",
+              is_pass=sv.is_pass)
     return (Junction(sv.chrom, sv.start, "L", sv.chrom, sv.end, "L", **kw),
             Junction(sv.chrom, sv.start, "R", sv.chrom, sv.end, "R", **kw))
 
@@ -2707,6 +2712,7 @@ def collect_junctions(bnds: list[BND], svs: list[SV]) -> list[Junction]:
                     and abs(m.pos_b - j.pos_b) <= JUNCTION_SAME_WINDOW):
                 m.sv_ids = m.sv_ids + j.sv_ids
                 m.noise_flags = m.noise_flags | j.noise_flags
+                m.is_pass = m.is_pass or j.is_pass
                 break
         else:
             merged.append(j)
@@ -3062,7 +3068,11 @@ def _sv_density(
     Returns ``(chroms_present, svs_filt, bins_cache, type_anchor)``.
     """
     chroms_present = [c for c in CHROM_ORDER if c in contigs]
-    svs_filt = [s for s in svs if s.is_pass and not s.is_noise]
+    plotted = set(chroms_present)
+    # Only events on drawn chromosomes: the legend counts what the rings
+    # show, so --only-sv-chroms and non-canonical contigs must not leak in.
+    svs_filt = [s for s in svs
+                if s.is_pass and not s.is_noise and s.chrom in plotted]
     svs_per_chrom = {
         c: [s for s in svs_filt if s.chrom == c] for c in chroms_present
     }
@@ -3106,23 +3116,164 @@ def sv_density_alpha(counts, anchor: float, svtype: str | None = None):
     return alphas
 
 
-def render_props(b: BND) -> tuple:
-    """Return ``(color, alpha, linestyle)`` for a BND in any plot.
-
-    Noise-flagged events are rendered grey/dashed/faint; non-PASS
-    events are rendered VAF-coloured but dashed and dimmer; PASS,
-    non-noise events are rendered solid in the VAF colour.
-    """
-    if b.is_noise:
-        return NOISE_COLOR, 0.18, (0, (3, 2))
-    if not b.is_pass:
-        return vaf_to_color(b.vaf), 0.30, (0, (3, 2))
-    return vaf_to_color(b.vaf), 0.70, "-"
-
-
 # ---------------------------------------------------------------------------
 # A) Circos plot
 # ---------------------------------------------------------------------------
+
+#: Arc styling per rearrangement tier, as ``(alpha, width factor)``.
+#: The repeat tier keeps alpha 0.70 on purpose: that is the regime the
+#: VAF colours were validated in under simulated colour-vision
+#: deficiency (``tests/test_vaf_colors.py``), and a real fusion the mask
+#: rule demotes lands in this tier, so it must stay as readable as every
+#: arc used to be. Candidates go darker and wider; single junctions -
+#: ~90 % of a normal genome's arcs - recede into background.
+ARC_TIER_STYLE: dict[str, tuple[float, float]] = {
+    "candidate": (0.90, 2.6),
+    "repeat": (0.70, 1.0),
+    "single": (0.30, 0.8),
+}
+
+#: Noise-flagged arcs, whatever their tier: grey and faint. A noise flag
+#: is an explicit artefact call (acrocentric p-arms, repeat collapse),
+#: unlike the mask rule's probabilistic demotion.
+NOISE_ARC_ALPHA: float = 0.18
+
+#: Non-PASS arcs (``--filter all``) draw at this fraction of their
+#: tier's alpha. pyCirclize draws arcs as filled ribbons, so a dash
+#: pattern cannot show; faintness is the only channel left.
+NON_PASS_ALPHA_FACTOR: float = 0.5
+
+#: Half-width of an arc's footprint at a breakpoint.
+CIRCOS_ARC_PAD: int = 250_000
+
+#: Candidates named beside the disc; any beyond this are counted.
+CIRCOS_MAX_NAMED_CANDIDATES: int = 10
+
+#: Radii for the numbered badges marking candidate breakpoints, starting
+#: just inside the ring stack where arcs start. A badge that would sit
+#: on another moves one step inward, like the --plotvaf labels.
+CIRCOS_BADGE_RADII: tuple[float, ...] = (68.0, 62.0, 56.0, 50.0)
+
+#: Two badges closer than this fraction of the plotted genome overlap
+#: at the badge radius (a ~20 px badge on a ~2,800 px circumference).
+CIRCOS_BADGE_MIN_SEP_FRAC: float = 1 / 120
+
+
+@dataclass
+class _Arc:
+    """One ribbon on the circos: a rearrangement event or a lone BND."""
+
+    region1: tuple
+    region2: tuple
+    vaf: float
+    support: int
+    tier: str
+    noisy: bool
+    non_pass: bool
+    ident: str
+    name: str = ""
+
+
+def _arc_region(chrom: str, pos: int, contigs: dict,
+                lo: int | None = None, hi: int | None = None) -> tuple:
+    """A breakpoint footprint, or a whole segment when it is wider."""
+    if lo is None or hi - lo < 2 * CIRCOS_ARC_PAD:
+        lo, hi = pos - CIRCOS_ARC_PAD, pos + CIRCOS_ARC_PAD
+    return (chrom, max(0, lo), min(contigs[chrom], hi))
+
+
+def _circos_arcs(events: list, extra_bnds: list[BND], contigs: dict,
+                 cytobands: dict) -> list[_Arc]:
+    """Arcs for classified events plus any BND no event covers.
+
+    A paired event is one arc at the mean position of its two junctions
+    - not two overlapping ones. An insertion's ribbon spans the whole
+    donor segment. BNDs outside every event (short intrachromosomal
+    ones, or when no events were passed) are drawn as single junctions.
+    """
+    arcs: list[_Arc] = []
+    for ev in events:
+        js = ev.junctions
+        j0 = js[0]
+        if j0.chr_a not in contigs or j0.chr_b not in contigs:
+            continue
+        pa = int(np.mean([j.pos_a for j in js]))
+        pb = int(np.mean([j.pos_b for j in js]))
+        r1 = _arc_region(j0.chr_a, pa, contigs)
+        r2 = _arc_region(j0.chr_b, pb, contigs)
+        if ev.kind == "insertion":
+            k = js[1]
+            if _ends(j0, k, "a")[0] <= _ends(j0, k, "b")[0]:
+                r2 = _arc_region(j0.chr_b, pb, contigs,
+                                 *sorted((j0.pos_b, k.pos_b)))
+            else:
+                r1 = _arc_region(j0.chr_a, pa, contigs,
+                                 *sorted((j0.pos_a, k.pos_a)))
+        arcs.append(_Arc(
+            r1, r2, float(np.mean(ev.vafs)), ev.support, ev.tier,
+            noisy=any(j.noise_flags for j in js),
+            non_pass=not all(j.is_pass for j in js),
+            ident="+".join(i for j in js for i in j.sv_ids),
+            name=(rearrangement_label(ev, cytobands)
+                  if ev.tier == "candidate" else ""),
+        ))
+    for b in extra_bnds:
+        if b.chr1 not in contigs or b.chr2 not in contigs:
+            continue
+        arcs.append(_Arc(
+            _arc_region(b.chr1, b.pos1, contigs),
+            _arc_region(b.chr2, b.pos2, contigs),
+            b.vaf, b.support, "single", b.is_noise, not b.is_pass, b.sv_id,
+        ))
+    return arcs
+
+
+def _place_badges(badges: list[tuple[str, float, int]],
+                  contigs: dict) -> list[tuple[str, float, float, int]]:
+    """Give each ``(chrom, pos, number)`` badge a radius, avoiding overlap.
+
+    Badges are placed in genome order; each takes the outermost radius
+    whose last badge is far enough away. The two ends of one event that
+    would overlap anyway (a short inversion) share a single badge.
+    """
+    offset, acc = {}, 0
+    for c in CHROM_ORDER:
+        if c in contigs:
+            offset[c] = acc
+            acc += contigs[c]
+    min_sep = max(acc, 1) * CIRCOS_BADGE_MIN_SEP_FRAC
+
+    placed: list[tuple[str, float, float, int]] = []
+    last: list[float | None] = [None] * len(CIRCOS_BADGE_RADII)
+    seen: dict[int, float] = {}
+    for chrom, pos, n in sorted(badges,
+                                key=lambda b: offset[b[0]] + b[1]):
+        g = offset[chrom] + pos
+        if n in seen and g - seen[n] < min_sep:
+            continue
+        seen[n] = g
+        ring = next((i for i, x in enumerate(last)
+                     if x is None or g - x >= min_sep), len(last) - 1)
+        last[ring] = g
+        placed.append((chrom, pos, CIRCOS_BADGE_RADII[ring], n))
+    return placed
+
+
+def _arc_style(arc: _Arc) -> tuple[str, float, float]:
+    """``(colour, alpha, width factor)`` for one arc."""
+    if arc.noisy:
+        return NOISE_COLOR, NOISE_ARC_ALPHA, 1.0
+    alpha, width = ARC_TIER_STYLE[arc.tier]
+    if arc.non_pass:
+        alpha *= NON_PASS_ALPHA_FACTOR
+    return vaf_to_color(arc.vaf), alpha, width
+
+
+def _arc_draw_key(arc: _Arc) -> tuple:
+    """Draw order: noise first, then singles, repeats, candidates on top."""
+    rank = {"single": 1, "repeat": 2, "candidate": 3}[arc.tier]
+    return (0 if arc.noisy else rank, arc.support)
+
 
 def _draw_vaf_labels(circos, labels: list[tuple], contigs: dict) -> int:
     """Place per-BND VAF percentage labels around the circos rim.
@@ -3264,24 +3415,27 @@ def _add_circos_legends(
     bin_size: int,
     *,
     any_non_pass: bool,
+    candidate_names: list[str] | None = None,
 ) -> list:
-    """Attach the circos keys: density rings, arc styles, cytobands.
+    """Attach the circos keys: rings, arcs, candidates, cytobands.
 
-    The circos is the only SV figure since the linear genome map was
-    removed, so it has to explain its own ink. Three keys stack in the
-    right-hand column, with the VAF colorbar between the arc key and
-    the cytoband key:
+    The circos is the only SV figure, so it explains its own ink. Four
+    keys stack in the right-hand column, with the VAF colorbar between
+    the candidate list and the cytoband key:
 
     - **rings**: which ring is which type, with its per-type event
       count. No number for the alpha scale - the ramp saturates at the
       99th-percentile bin, which the title says, and printing the
       busiest bin beside that invited readers to take the wrong number
       as the top of the scale.
-    - **arcs**: solid = PASS (coloured by the VAF bar), grey dashed =
-      noise-flagged. A dashed coloured entry for non-PASS events is
-      added only when some are drawn (``--filter all``).
+    - **arcs**: the three rearrangement tiers, plus non-PASS when any
+      are drawn, and noise-flagged. Samples are solid because the arcs
+      are: pyCirclize draws filled ribbons, which cannot show a dash.
+    - **candidates**: numbered to match the badges on the disc, named
+      by :func:`rearrangement_label`. Always present - "none" is an
+      answer a cytogeneticist wants stated, not implied by absence.
     - **cytobands**: the greyscale ramp with the circos's red
-      centromere, which differs from the black used on ideograms.
+      centromere.
 
     Returns the legend artists, which ``bbox_inches="tight"`` needs
     listed explicitly or it can crop entries outside the axes.
@@ -3301,26 +3455,47 @@ def _add_circos_legends(
         for t in CIRCOS_SV_RING_ORDER
     ]
     rings = fig.legend(
-        handles=ring_handles, bbox_to_anchor=(0.78, 0.92),
+        handles=ring_handles, bbox_to_anchor=(0.78, 0.94),
         title=f"SV density rings, outer to inner\n(alpha saturates at the "
               f"99th-percentile {bin_label} bin)",
         **style,
     )
 
+    sample = VAF_CLASS_COLORS[1]
     arc_handles = [
-        plt.Line2D([0], [0], color=VAF_CLASS_COLORS[1], linewidth=1.4,
-                   alpha=0.70, label="PASS (colour = VAF)"),
+        plt.Line2D([0], [0], color=sample, alpha=ARC_TIER_STYLE[tier][0],
+                   linewidth=1.2 * ARC_TIER_STYLE[tier][1], label=label)
+        for tier, label in (
+            ("candidate", "candidate: both junctions found"),
+            ("repeat", "paired, but in repeats"),
+            ("single", "single junction"),
+        )
     ]
     if any_non_pass:
         arc_handles.append(plt.Line2D(
-            [0], [0], color=VAF_CLASS_COLORS[1], linewidth=1.4, alpha=0.30,
-            linestyle=(0, (3, 2)), label="non-PASS"))
+            [0], [0], color=sample, linewidth=1.2,
+            alpha=ARC_TIER_STYLE["single"][0] * NON_PASS_ALPHA_FACTOR,
+            label="non-PASS (fainter)"))
     arc_handles.append(plt.Line2D(
-        [0], [0], color=NOISE_COLOR, linewidth=1.4, alpha=0.5,
-        linestyle=(0, (3, 2)), label="noise-flagged"))
+        [0], [0], color=NOISE_COLOR, linewidth=1.2, alpha=0.5,
+        label="noise-flagged"))
     arcs = fig.legend(
-        handles=arc_handles, bbox_to_anchor=(0.78, 0.715),
-        title="BND arcs (width = read support)", **style,
+        handles=arc_handles, bbox_to_anchor=(0.78, 0.765),
+        title="BND arcs (colour = VAF, width = read support)", **style,
+    )
+
+    names = list(candidate_names or [])
+    shown = names[:CIRCOS_MAX_NAMED_CANDIDATES]
+    cand_labels = [f"{n}   {name}" for n, name in enumerate(shown, 1)]
+    if len(names) > len(shown):
+        cand_labels.append(f"... and {len(names) - len(shown)} more")
+    if not cand_labels:
+        cand_labels = ["none"]
+    cand = fig.legend(
+        handles=[plt.Line2D([], [], linestyle="none") for _ in cand_labels],
+        labels=cand_labels, handlelength=0, handletextpad=0,
+        bbox_to_anchor=(0.78, 0.585),
+        title="candidate rearrangements", **style,
     )
 
     cyto_handles = [
@@ -3329,10 +3504,10 @@ def _add_circos_legends(
         for st in ("gneg", "gpos50", "gpos100", "acen", "gvar")
     ]
     cyto = fig.legend(
-        handles=cyto_handles, bbox_to_anchor=(0.78, 0.235),
-        title="cytobands", ncols=2, **style,
+        handles=cyto_handles, bbox_to_anchor=(0.78, 0.17),
+        title="cytobands", ncols=3, **style,
     )
-    return [rings, arcs, cyto]
+    return [rings, arcs, cand, cyto]
 
 
 def plot_circos(
@@ -3345,6 +3520,7 @@ def plot_circos(
     plot_vaf: bool = False,
     *,
     bin_size: int = 1_000_000,
+    events: list | None = None,
 ) -> None:
     """Render the circos plot (SV density rings + BND ribbons on cytobands).
 
@@ -3376,6 +3552,12 @@ def plot_circos(
         are deliberately de-emphasised and a label would undo that.
     bin_size : int, optional
         Density-ring bin width in bp (default 1,000,000).
+    events : list[Rearrangement], optional
+        Output of :func:`classify_rearrangements`, already restricted to
+        what should be drawn. Each event is one arc, styled by its tier
+        (:data:`ARC_TIER_STYLE`), and candidates are numbered and named.
+        BNDs in ``bnds_unique`` that no event covers are drawn as single
+        junctions; with no events, every BND is.
     """
     import tempfile
 
@@ -3430,34 +3612,55 @@ def plot_circos(
         t: sum(1 for s in svs_filt if s.svtype == t) for t in SV_TYPES
     }
 
-    supports = np.array([b.support for b in bnds_unique], dtype=float)
+    covered = {i for ev in (events or []) for j in ev.junctions
+               for i in j.sv_ids}
+    arcs = _circos_arcs(
+        events or [], [b for b in bnds_unique if b.sv_id not in covered],
+        contigs, load_cytobands(cytoband_path),
+    )
+    supports = np.array([a.support for a in arcs], dtype=float)
     smax = supports.max() if supports.size else 1.0
+
+    # Candidates are numbered in genome order; the number sits on a badge
+    # at each of their breakpoints and against their name beside the disc.
+    candidates = sorted(
+        (a for a in arcs if a.tier == "candidate" and not a.noisy),
+        key=lambda a: (CHROM_ORDER.index(a.region1[0]), a.region1[1]),
+    )
 
     # Arcs start at the inner edge of the ring stack, so translocations
     # occupy the disk and located events occupy the rings - the same
     # separation Bionano Access uses, and the reason the two never
     # overprint.
     link_r = CIRCOS_SV_RING_R[0]
-    pad = 250_000
     pending_labels: list[tuple] = []
-    ordered = sorted(bnds_unique, key=lambda b: (not b.is_noise, b.support))
-    for b in ordered:
-        if b.chr1 not in contigs or b.chr2 not in contigs:
-            continue
-        L1, L2 = contigs[b.chr1], contigs[b.chr2]
-        s1 = (b.chr1, max(0, b.pos1 - pad), min(L1, b.pos1 + pad))
-        s2 = (b.chr2, max(0, b.pos2 - pad), min(L2, b.pos2 + pad))
-        color, alpha, _ls = render_props(b)
+    for a in sorted(arcs, key=_arc_draw_key):
+        color, alpha, width = _arc_style(a)
         try:
-            circos.link(s1, s2, r1=link_r, r2=link_r,
+            circos.link(a.region1, a.region2, r1=link_r, r2=link_r,
                         color=color, alpha=alpha,
                         height_ratio=0.55,
-                        linewidth=support_to_lw(b.support, smax, 0.2, 1.0))
+                        linewidth=width * support_to_lw(a.support, smax,
+                                                        0.2, 1.0))
         except Exception as e:  # noqa: BLE001
-            print(f"  warn: circos link failed for {b.sv_id}: {e}", file=sys.stderr)
+            print(f"  warn: circos link failed for {a.ident}: {e}",
+                  file=sys.stderr)
             continue
-        if plot_vaf and not b.is_noise:
-            pending_labels.append((b.chr1, b.pos1, b.vaf, color, b.sv_id))
+        if plot_vaf and not a.noisy:
+            mid = (a.region1[1] + a.region1[2]) // 2
+            pending_labels.append((a.region1[0], mid, a.vaf, color, a.ident))
+
+    badges = [(chrom, (lo + hi) / 2, n)
+              for n, a in enumerate(candidates, 1)
+              for chrom, lo, hi in (a.region1, a.region2)]
+    for chrom, pos, r, n in _place_badges(badges, contigs):
+        circos.get_sector(chrom).text(
+            str(n), x=pos, r=r, size=6.5,
+            color=INK_BADGE, fontweight="bold",
+            bbox=dict(boxstyle="circle,pad=0.18", fc=PAPER_BG,
+                      ec=INK_BADGE, lw=0.6),
+            ignore_range_error=True,
+        )
 
     if plot_vaf:
         n_labelled, n_crowded = _draw_vaf_labels(
@@ -3494,14 +3697,15 @@ def plot_circos(
         (1.0 - 2 * m) / CIRCOS_FIG_WIDEN, 1.0 - 2 * m,
     ])
 
-    cax = fig.add_axes([0.795, 0.28, 0.016, 0.28])
+    cax = fig.add_axes([0.795, 0.20, 0.016, 0.20])
     sm = plt.cm.ScalarMappable(cmap=VAF_CMAP, norm=VAF_NORM)
     cb = fig.colorbar(sm, cax=cax, label="VAF")
     _style_vaf_colorbar(cb)
 
     legends = _add_circos_legends(
         fig, n_svs_by_type, bin_size,
-        any_non_pass=any(not b.is_pass for b in bnds_unique),
+        any_non_pass=any(a.non_pass for a in arcs),
+        candidate_names=[a.name for a in candidates],
     )
 
     fig.set_facecolor(PAPER_BG)
@@ -3587,6 +3791,7 @@ def make_html_report(
     filter_label: str,
     caller: str,
     caller_basis: str,
+    rearrangements: str = "",
 ) -> None:
     """Write a single-file, self-contained HTML report to ``out_path``.
 
@@ -3640,7 +3845,9 @@ def make_html_report(
         f"  </div>\n"
         f"  <div class=\"chips\"><strong>BND noise:</strong> {''.join(bd_chips)}</div>\n"
         f"  <div class=\"chips\"><strong>Non-BND SVs (PASS):</strong> {_esc(sv_summary)}</div>\n"
-        f"  <div class=\"basis\">caller fingerprint basis: {_esc(caller_basis)}</div>\n"
+        + (f"  <div class=\"chips\"><strong>Rearrangements:</strong> "
+           f"{_esc(rearrangements)}</div>\n" if rearrangements else "")
+        + f"  <div class=\"basis\">caller fingerprint basis: {_esc(caller_basis)}</div>\n"
         f"</details>\n"
         f"<footer>generated by <code>molamola</code> "
         f"&middot; circos via "
@@ -3857,6 +4064,12 @@ def _add_sv_args(p) -> None:
                         "for targeted / panel runs with few breakends, "
                         "where reading the exact VAF off the plot is more "
                         "useful than reading the class colour.")
+    p.add_argument("--only-sv-chroms", action="store_true",
+                   help="draw only the chromosomes that carry at least one "
+                        "BND arc or rearrangement. Off by default. For "
+                        "targeted / adaptive-sampling runs, where a "
+                        "genome-wide circos spends most of its disc on "
+                        "chromosomes with nothing to show.")
     p.add_argument(
         "--caller",
         choices=["auto", "sniffles2", "sniffles1", "cutesv",
@@ -4213,9 +4426,30 @@ def plot_main(args: argparse.Namespace) -> int:
 
     # Render the circos into an in-memory PNG buffer — no temp files.
     circos_buf = io.BytesIO()
-    plot_circos(unique_bnds, svs, contigs, cytoband_file,
+    # Under --focus, draw only the events holding a focused BND.
+    shown_ids = {b.sv_id for b in unique_bnds}
+    draw_events = [
+        ev for ev in events
+        if not args.focus
+        or any(i in shown_ids for j in ev.junctions for i in j.sv_ids)
+    ]
+    plot_contigs = contigs
+    if args.only_sv_chroms:
+        keep = ({c for ev in draw_events for j in ev.junctions
+                 for c in (j.chr_a, j.chr_b)}
+                | {c for b in unique_bnds for c in (b.chr1, b.chr2)})
+        plot_contigs = {c: L for c, L in contigs.items() if c in keep}
+        if not plot_contigs:
+            print("--only-sv-chroms: no chromosome carries a BND or "
+                  "rearrangement; drawing all of them", file=sys.stderr)
+            plot_contigs = contigs
+        else:
+            print(f"--only-sv-chroms: drawing {len(plot_contigs)} of "
+                  f"{sum(c in CHROM_SET for c in contigs)} chromosomes")
+    plot_circos(unique_bnds, svs, plot_contigs, cytoband_file,
                 circos_buf, sample,
-                plot_vaf=args.plotvaf, bin_size=args.bin_size)
+                plot_vaf=args.plotvaf, bin_size=args.bin_size,
+                events=draw_events)
 
     out_html = out_dir / f"{sample}{focus_tag}.report.html"
     make_html_report(
@@ -4232,6 +4466,7 @@ def plot_main(args: argparse.Namespace) -> int:
         filter_label=args.filter,
         caller=caller,
         caller_basis=basis,
+        rearrangements=rearrangement_summary(events),
     )
     print(f"wrote {out_html}")
     if args.png:

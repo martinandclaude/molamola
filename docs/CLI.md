@@ -45,6 +45,7 @@ Active when the input VCF carries `##INFO=<ID=SVTYPE,...>` (Sniffles2 / cuteSV /
 | `--min-svlen N` | `50` | hard SVLEN cutoff (bp) for non-BND SVs. Set `0` to disable. BNDs are unaffected. |
 | `--bin-size N` | `1,000,000` | bin width in bp for the circos SV density rings. |
 | `--plotvaf` | off | print each BND's VAF as a percentage next to its arc on the circos. Aimed at targeted / panel runs; on a WGS call set the labels overplot. Labels are staggered across four rings and, where breakpoints are too clustered to separate, drawn anyway with the overlap count reported. Noise-flagged BNDs are not labelled. |
+| `--only-sv-chroms` | off | draw only the chromosomes carrying at least one BND arc or rearrangement. For targeted / adaptive-sampling runs, where a genome-wide circos spends most of its disc on chromosomes with nothing to show. |
 
 ## Karyotype-mode flags
 

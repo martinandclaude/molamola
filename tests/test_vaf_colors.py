@@ -272,16 +272,24 @@ def _lab(linear_rgb):
 def _blend(color, alpha):
     """Colour as actually drawn: alpha-composited over the page.
 
-    Arcs render at alpha 0.70 and noise-flagged arcs at 0.18, which
-    lifts both toward the background. Judging the raw hex values
-    overstates how distinct they are on the plot.
+    Arcs render at their tier's alpha (``ARC_TIER_STYLE``) and
+    noise-flagged arcs at ``NOISE_ARC_ALPHA``, which lifts both toward
+    the background. Judging the raw hex values overstates how distinct
+    they are on the plot.
     """
     fg, bg = np.array(to_rgb(color)), np.array(to_rgb(mm.PAPER_BG))
     return tuple(alpha * fg + (1 - alpha) * bg)
 
 
-ARC_ALPHA = 0.70
-NOISE_ALPHA = 0.18
+#: Tiers whose arcs a reader has to decode by VAF colour: candidates, and
+#: pairs demoted to "in repeats" - which is where a real fusion lands when
+#: the mask rule catches it. Single junctions are background by design and
+#: carry no legibility guarantee.
+GUARANTEED_TIERS = ["candidate", "repeat"]
+
+
+def _alpha(tier):
+    return mm.ARC_TIER_STYLE[tier][0]
 
 
 def _delta_e(a, b, kind):
@@ -291,29 +299,32 @@ def _delta_e(a, b, kind):
 CVD_KINDS = ["normal", "protan", "deutan", "tritan"]
 
 
+@pytest.mark.parametrize("tier", GUARANTEED_TIERS)
 @pytest.mark.parametrize("kind", CVD_KINDS)
-def test_classes_stay_distinct_under_colour_blindness(kind):
-    drawn = [_blend(c, ARC_ALPHA) for c in mm.VAF_CLASS_COLORS]
+def test_classes_stay_distinct_under_colour_blindness(kind, tier):
+    drawn = [_blend(c, _alpha(tier)) for c in mm.VAF_CLASS_COLORS]
     worst = min(_delta_e(drawn[i], drawn[j], kind)
                 for i in range(len(drawn)) for j in range(i + 1, len(drawn)))
     assert worst >= 30, f"{kind}: closest VAF classes are only dE {worst:.1f} apart"
 
 
+@pytest.mark.parametrize("tier", GUARANTEED_TIERS)
 @pytest.mark.parametrize("kind", CVD_KINDS)
-def test_no_class_looks_like_a_noise_flagged_bnd(kind):
+def test_no_class_looks_like_a_noise_flagged_bnd(kind, tier):
     """A VAF class that lands on the noise grey makes real events read as
     artefacts -- worse than merely being hard to tell apart."""
-    noise = _blend(mm.NOISE_COLOR, NOISE_ALPHA)
-    worst = min(_delta_e(_blend(c, ARC_ALPHA), noise, kind)
+    noise = _blend(mm.NOISE_COLOR, mm.NOISE_ARC_ALPHA)
+    worst = min(_delta_e(_blend(c, _alpha(tier)), noise, kind)
                 for c in mm.VAF_CLASS_COLORS)
     assert worst >= 25, f"{kind}: a VAF class is only dE {worst:.1f} from noise"
 
 
-def test_every_class_is_legible_as_drawn():
+@pytest.mark.parametrize("tier", GUARANTEED_TIERS)
+def test_every_class_is_legible_as_drawn(tier):
     """The 3:1 floor has to hold on the composited colour, not the raw
     hex -- alpha 0.70 costs about a third of the nominal contrast."""
     for color in mm.VAF_CLASS_COLORS:
-        assert _contrast_on_paper(_blend(color, ARC_ALPHA)) >= 3.0, color
+        assert _contrast_on_paper(_blend(color, _alpha(tier))) >= 3.0, color
 
 
 def test_lightness_is_monotonic_with_vaf():

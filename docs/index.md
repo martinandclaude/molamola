@@ -57,11 +57,16 @@ coverage 54x).
 ISCN cytobands on the rim and a red centromere. Inside the rim sit
 four 1-Mb-bin SV density rings -- INS, DEL, DUP, INV, outermost
 first -- so located events read on the rings while connections read
-across the disc. Each ribbon across the disc is a BND (translocation
-or large rearrangement); ribbon colour encodes VAF as one of three
-discrete classes -- 0-33 %, 33-66 %, 66-100 % -- rather than a
-continuous ramp, so the bands are separable at a glance. Keys for the
-rings, the arc styles and the cytoband greys sit beside the disc.
+across the disc. Each ribbon across the disc is a rearrangement:
+junctions are paired into translocations, inversions and insertions,
+and candidates -- both junctions found, outside repeats -- are drawn
+darkest, numbered on the disc and named beside it in ISCN form. Single
+junctions, most of a normal genome's arcs, stay faint. Ribbon colour
+encodes VAF as one of three discrete classes -- 0-33 %, 33-66 %,
+66-100 % -- rather than a continuous ramp, so the bands are separable
+at a glance. On this normal genome the only candidates are large
+inversion calls, which are common polymorphisms or recurrent caller
+artefacts.
 
 ## Bundled references
 

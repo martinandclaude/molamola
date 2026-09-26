@@ -4,7 +4,7 @@ This page covers two distinct mechanisms: **SV-mode noise flags** (events stay i
 
 ## SV-mode noise flags
 
-Each event in the VCF is checked against a few independent noise-flag rules. A flag does not drop the event from the output — flagged events still appear in the HTML report, but render greyed/dashed in the figures so the eye goes to the unflagged signal first.
+Each event in the VCF is checked against a few independent noise-flag rules. A flag does not drop the event from the output — flagged events still appear in the HTML report, but render grey and faint in the figures so the eye goes to the unflagged signal first.
 
 The directional sense of the **raise** / **lower** columns is consistent: raising a threshold makes the filter looser (fewer events flagged), lowering makes it stricter (more events flagged).
 
@@ -42,7 +42,7 @@ When `--focus CHR:POS` is given, BNDs whose endpoints fall within `±--focus-win
 
 ## Rearrangement tiers (SV mode)
 
-Separately from the noise flags, molamola groups BND junctions into rearrangement events, so that a balanced translocation or inversion is not just one arc among a hundred. The run prints one line per sample, e.g. `Rearrangements: 1 candidate (1 translocation), 11 paired in repeats, 83 single junctions`, and `--focus` names each matched BND by the event it belongs to.
+Separately from the noise flags, molamola groups BND junctions into rearrangement events, so that a balanced translocation or inversion is not just one arc among a hundred. The circos draws one arc per event, emphasised by tier and with candidates numbered and named (see [Outputs](OUTPUTS.md#circos-plot-sv-mode)). The run prints one line per sample, e.g. `Rearrangements: 1 candidate (1 translocation), 11 paired in repeats, 83 single junctions`, which the report's metadata block repeats, and `--focus` names each matched BND by the event it belongs to.
 
 A BND record is one **junction**: two breakpoints joined, each keeping the sequence on one side of it. A balanced translocation leaves **two** junctions, one per derivative chromosome. These sit within `100 kb` of each other at both breakpoints and keep opposite sides. Artefacts usually leave one. Records describing the same junction twice (cuteSV writes each mate separately) are merged first.
 
