@@ -3,6 +3,12 @@
 All notable changes to molamola are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **Development: ruff is pinned to 0.16.9** in CI, the `[dev]` extra and `environment.yml`, and CI now also lints `scripts/`. CI installed ruff unpinned, so it picked up the 0.16 series, whose wider default rule set had failed the lint job on every push since v0.6.0 while local lint on 0.15 passed. The 48 findings are fixed. They were style only — import order, literal dicts, redundant `int(round(...))`, unused unpacked names, a shebang on the package `__init__` — and every report figure renders byte-identical before and after.
+
 ## [0.7.0] — 2026-09-26
 
 Balanced events for AML / ALL cytogenetics. Depth-based karyotypes cannot see a balanced translocation or inversion; this release pairs BND junctions into rearrangements, draws them by how much they deserve attention, and gives each candidate a derivative-chromosome panel with its genes and fusion.

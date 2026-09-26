@@ -17,7 +17,6 @@ import pytest
 
 import molamola as mm
 
-
 P8, P21 = 92_050_000, 34_900_000
 INV16 = (15_800_000, 67_070_000)
 

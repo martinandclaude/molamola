@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import matplotlib
+
 matplotlib.use("Agg")
 
 import numpy as np
@@ -161,7 +162,7 @@ def test_rolling_median_per_chrom_smooths_deletion(cov_and_bin):
 
 
 def test_aggregate_for_scatter_reduces_rows(cov_and_bin):
-    cov, bin_size = cov_and_bin
+    cov, _bin_size = cov_and_bin
     cov2 = cov.copy()
     cov2["cn"] = cov2["depth"].to_numpy() * 2.0 / 30.0
     cov2["xpos"] = cov2["start"].to_numpy().astype(np.float64)
@@ -174,7 +175,7 @@ def test_aggregate_for_scatter_reduces_rows(cov_and_bin):
 
 
 def test_aggregate_for_scatter_factor_one_returns_unmasked(cov_and_bin):
-    cov, bin_size = cov_and_bin
+    cov, _bin_size = cov_and_bin
     cov2 = cov.copy()
     cov2["cn"] = cov2["depth"].to_numpy() * 2.0 / 30.0
     cov2["xpos"] = cov2["start"].to_numpy().astype(np.float64)

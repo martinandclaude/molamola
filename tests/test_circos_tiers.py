@@ -14,7 +14,6 @@ import pytest
 
 import molamola as mm
 
-
 P8, P21 = 92_050_000, 34_900_000
 CONTIGS = {"chr8": 145_138_636, "chr16": 90_338_345, "chr21": 46_709_983}
 
@@ -79,9 +78,9 @@ def test_arcs_off_the_plotted_chromosomes_are_skipped(make_bnd, cyto):
 # --- styling ---------------------------------------------------------------
 
 def _arc(**kw):
-    base = dict(region1=("chr8", 0, 1), region2=("chr21", 0, 1), vaf=0.5,
-                support=10, tier="single", noisy=False, non_pass=False,
-                ident="x")
+    base = {"region1": ("chr8", 0, 1), "region2": ("chr21", 0, 1),
+            "vaf": 0.5, "support": 10, "tier": "single", "noisy": False,
+            "non_pass": False, "ident": "x"}
     base.update(kw)
     return mm._Arc(**base)
 

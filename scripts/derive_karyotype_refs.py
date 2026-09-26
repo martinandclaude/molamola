@@ -55,7 +55,6 @@ import shutil
 import sys
 from pathlib import Path
 
-
 GC_SOURCE_BIN_BP = 500
 GC_TARGET_BIN_BP = 10_000
 GC_AGG_FACTOR = GC_TARGET_BIN_BP // GC_SOURCE_BIN_BP  # 20
@@ -100,7 +99,7 @@ def aggregate_gc(src: Path, dst: Path) -> None:
             end = window[-1][1]
             vals = [g for (_s, _e, g) in window if g != SENTINEL_ALL_N]
             if vals:
-                gc = int(round(sum(vals) / len(vals)))
+                gc = round(sum(vals) / len(vals))
                 gc = max(0, min(100, gc))
             else:
                 gc = SENTINEL_ALL_N

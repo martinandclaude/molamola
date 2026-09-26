@@ -6,7 +6,6 @@ import pytest
 
 import molamola as mm
 
-
 # --- parse_alt_for_mate -----------------------------------------------------
 
 @pytest.mark.parametrize(

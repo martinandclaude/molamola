@@ -17,7 +17,6 @@ import pytest
 
 import molamola as mm
 
-
 # --- _parse_phase_fields ---------------------------------------------------
 
 def test_left_allele_is_haplotype_one():

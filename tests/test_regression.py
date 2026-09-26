@@ -9,7 +9,6 @@ matplotlib.use("Agg")
 
 import molamola as mm
 
-
 # --- defaults: PASS-only run ------------------------------------------------
 
 def test_default_run_writes_only_html(tiny_vcf, tmp_path):

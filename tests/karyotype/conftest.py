@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-
 TEST_DATA = Path(__file__).resolve().parent / "data"
 
 

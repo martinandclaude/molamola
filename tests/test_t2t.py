@@ -6,7 +6,6 @@ import pytest
 
 import molamola as mm
 
-
 # --- find_cytoband_file: bundled cytobands ---------------------------------
 
 def test_find_cytoband_file_t2t_uses_bundled(package_data_dir):

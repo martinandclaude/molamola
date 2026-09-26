@@ -17,7 +17,6 @@ import pytest
 
 import molamola as mm
 
-
 # Breakpoints inside RUNX1T1 (8q21.3) and RUNX1 (21q22.12), hg38 - far
 # from any centromere, so the pericentromeric rule stays out of the way.
 P8, P21 = 92_050_000, 34_900_000
@@ -287,8 +286,8 @@ def test_real_format_bnd_records_classify_as_a_translocation(tmp_path, cyto):
     recs = [
         f"chr8\t{P8}\tBND.1\tG\tG[chr21:{P21}[\t60\tPASS\tSVTYPE=BND;{info}\tGT\t0/1",
         f"chr8\t{P8 + 10}\tBND.2\tG\t]chr21:{P21 - 10}]G\t60\tPASS\tSVTYPE=BND;{info}\tGT\t0/1",
-        f"chr16\t20000000\tINV.1\tN\t<INV>\t60\tPASS\t"
-        f"SVTYPE=INV;SVLEN=51000000;END=71000000;{info}\tGT\t0/1",
+        (f"chr16\t20000000\tINV.1\tN\t<INV>\t60\tPASS\t"
+         f"SVTYPE=INV;SVLEN=51000000;END=71000000;{info}\tGT\t0/1"),
     ]
     p = tmp_path / "t821.vcf"
     p.write_text(header + "\n".join(recs) + "\n")

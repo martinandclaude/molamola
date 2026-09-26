@@ -59,7 +59,7 @@ molamola = "molamola:main"
 [project.optional-dependencies]
 dev = [
     "pytest>=7",
-    "ruff>=0.4",
+    "ruff==0.16.9",  # same pin as CI (.github/workflows/ci.yml)
 ]
 [tool.setuptools]
 packages = ["molamola"]

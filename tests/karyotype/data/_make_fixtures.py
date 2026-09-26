@@ -29,7 +29,6 @@ from pathlib import Path
 
 import numpy as np
 
-
 HERE = Path(__file__).resolve().parent
 
 CHROMS = ("chr1", "chr2", "chrX", "chrY")

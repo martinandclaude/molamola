@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TEST_DATA = Path(__file__).resolve().parent / "data"
 PACKAGE_DATA = REPO_ROOT / "molamola" / "data"
@@ -71,7 +70,7 @@ def make_bnd():
         filter_: str = "PASS",
         sv_id: str = "BND.test",
         coverage: list | None = None,
-    ) -> "mm.BND":
+    ) -> mm.BND:
         return mm.BND(
             chr1=chr1, pos1=pos1, chr2=chr2, pos2=pos2,
             orientation=orientation, support=support, vaf=vaf,
@@ -98,7 +97,7 @@ def make_sv():
         vaf: float = 0.5,
         sv_id: str = "SV.test",
         coverage: list | None = None,
-    ) -> "mm.SV":
+    ) -> mm.SV:
         if end is None:
             end = start + svlen
         return mm.SV(

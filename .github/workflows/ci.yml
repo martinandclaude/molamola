@@ -15,8 +15,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install ruff
-      - run: ruff check molamola/ tests/
+      # Pinned: an unpinned `pip install ruff` picked up the 0.16 series,
+      # whose wider default rule set failed every push from v0.6.0 on
+      # while local lint (0.15) passed. Bump deliberately, together with
+      # the dev extra and environment.yml.
+      - run: pip install ruff==0.16.9
+      - run: ruff check molamola/ tests/ scripts/
 
   test:
     name: pytest (Python ${{ matrix.python-version }})

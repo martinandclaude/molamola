@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-import molamola as mm
+import argparse
 
+import pytest
+
+import molamola as mm
 
 # --- annotate_noise (BNDs) --------------------------------------------------
 
@@ -168,11 +171,6 @@ def test_sv_noise_breakdown_per_type(make_sv):
 
 # --- _parse_cov_ratio -------------------------------------------------------
 
-import argparse  # noqa: E402
-
-import pytest  # noqa: E402
-
-
 @pytest.mark.parametrize("s, expected", [
     ("2.5",  2.5),
     ("3",    3.0),
@@ -221,7 +219,7 @@ def test_auto_cov_ratio_skips_non_pass_events(make_bnd):
     """Filtered-out events must not contribute to the empirical distribution."""
     flagged = make_bnd(coverage=[300.0]*5, filter_="GT", sv_id="BND.gt")
     pass_b = make_bnd(coverage=[30.0]*5, filter_="PASS", sv_id="BND.pass")
-    thr, n = mm.auto_cov_ratio_threshold([flagged, pass_b], [], median_cov=30.0)
+    _thr, n = mm.auto_cov_ratio_threshold([flagged, pass_b], [], median_cov=30.0)
     assert n == 1  # only the PASS event was considered
 
 

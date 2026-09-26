@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import molamola as mm
 
-
 # --- by ##source= ----------------------------------------------------------
 
 def test_detect_caller_recognises_sniffles2_via_source(tiny_vcf):

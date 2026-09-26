@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import molamola as mm
 
-
 # --- resolve_cytoband -------------------------------------------------------
 
 def test_resolve_cytoband_returns_band_name(bundled_cytoband):

@@ -8,7 +8,6 @@ import pytest
 
 import molamola as mm
 
-
 # --- parse_focus ------------------------------------------------------------
 
 @pytest.mark.parametrize(

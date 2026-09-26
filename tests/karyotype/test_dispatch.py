@@ -9,6 +9,7 @@ BAF source, not run through SV / compound-het header dispatch).
 from __future__ import annotations
 
 import matplotlib
+
 matplotlib.use("Agg")
 
 import pytest

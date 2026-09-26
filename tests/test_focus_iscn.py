@@ -8,7 +8,6 @@ import pytest
 
 import molamola as mm
 
-
 # --- parse_focus accepts band syntax ---------------------------------------
 
 @pytest.mark.parametrize("spec, expected", [

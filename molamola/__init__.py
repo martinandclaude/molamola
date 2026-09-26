@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """molamola — plot Oxford Nanopore variation as self-contained HTML reports.
 
 One input in, one self-contained HTML out. molamola is a cytogenetics
@@ -60,7 +59,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.lines import Line2D
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1829,7 +1827,7 @@ def rolling_median_per_chrom(df: pd.DataFrame, bin_size: int,
 
     Returns a copy of ``df`` with a new ``smooth`` column.
     """
-    win = max(1, int(round(window_mb * 1e6 / bin_size)))
+    win = max(1, round(window_mb * 1e6 / bin_size))
     df = df.copy()
     df["_in"] = np.where(mask_pass, df["cn"].to_numpy(), np.nan)
     parts = []
@@ -2185,7 +2183,7 @@ def render_karyotype_genome_png(
     offsets = cum_offsets(lengths)
     cov_xy = _kary_attach_xpos(cov, "start", offsets)
 
-    factor = max(1, int(round(args.scatter_bin_kb * 1000 / bin_size)))
+    factor = max(1, round(args.scatter_bin_kb * 1000 / bin_size))
     cap_factor = max(1, int(np.ceil(len(cov_xy) / args.max_points)))
     factor = max(factor, cap_factor)
     scatter = aggregate_for_scatter(cov_xy, factor)
@@ -2700,9 +2698,9 @@ def junctions_from_inv(sv: SV) -> tuple[Junction, Junction]:
     ``end`` (R, R) - a reciprocal pair by construction. Whether the
     caller actually observed both junctions is not recorded in the VCF.
     """
-    kw = dict(support=sv.support, vaf=sv.vaf, sv_ids=(sv.sv_id,),
-              noise_flags=frozenset(sv.noise_flags), source="INV",
-              is_pass=sv.is_pass)
+    kw = {"support": sv.support, "vaf": sv.vaf, "sv_ids": (sv.sv_id,),
+          "noise_flags": frozenset(sv.noise_flags), "source": "INV",
+          "is_pass": sv.is_pass}
     return (Junction(sv.chrom, sv.start, "L", sv.chrom, sv.end, "L", **kw),
             Junction(sv.chrom, sv.start, "R", sv.chrom, sv.end, "R", **kw))
 
@@ -2954,8 +2952,8 @@ def classify_rearrangements(
         if (genes is not None and ev.reasons == ("all breakpoints masked",)
                 and all(genes_at(genes, c, p) for c, p in pts)):
             ev.tier, ev.reasons = "candidate", ()
-            ev.notes = ("breakpoints masked; kept because every one "
-                        "falls in a gene",)
+            ev.notes = (("breakpoints masked; kept because every one "
+                         "falls in a gene"),)
     return events
 
 
@@ -3660,9 +3658,9 @@ def _add_circos_legends(
     bin_mb = bin_size / 1_000_000
     bin_label = (f"{bin_mb:g} Mb" if bin_mb >= 1
                  else f"{bin_size // 1000:,} kb")
-    style = dict(frameon=True, framealpha=0.9, edgecolor="#CCCCCC",
-                 facecolor=PAPER_BG, fontsize=7.5, title_fontsize=7.5,
-                 alignment="left", loc="upper left")
+    style = {"frameon": True, "framealpha": 0.9, "edgecolor": "#CCCCCC",
+             "facecolor": PAPER_BG, "fontsize": 7.5, "title_fontsize": 7.5,
+             "alignment": "left", "loc": "upper left"}
     x0, top, gap = 1.0 / CIRCOS_FIG_WIDEN + 0.01, 0.95, 0.012
 
     ring_handles = [
@@ -3881,8 +3879,8 @@ def plot_circos(
         circos.get_sector(chrom).text(
             str(n), x=pos, r=r, size=6.5,
             color=INK_BADGE, fontweight="bold",
-            bbox=dict(boxstyle="circle,pad=0.18", fc=PAPER_BG,
-                      ec=INK_BADGE, lw=0.6),
+            bbox={"boxstyle": "circle,pad=0.18", "fc": PAPER_BG,
+                  "ec": INK_BADGE, "lw": 0.6},
             ignore_range_error=True,
         )
 
@@ -4117,8 +4115,8 @@ def _draw_panel_chrom(ax, x: float, pieces: list[tuple], scale: float,
             if rev:
                 ax.annotate("", xy=(x - _PANEL_W / 2 - 0.15, y + 0.03 * (top - y)),
                             xytext=(x - _PANEL_W / 2 - 0.15, top - 0.03 * (top - y)),
-                            arrowprops=dict(arrowstyle="-|>", color=KARY_INK_2,
-                                            lw=0.8))
+                            arrowprops={"arrowstyle": "-|>",
+                                        "color": KARY_INK_2, "lw": 0.8})
         bounds.append(y)
     for dx in (-_PANEL_W / 2, _PANEL_W / 2):
         ax.plot([x + dx, x + dx], [0, y], color=KARY_INK, lw=0.8)
@@ -4424,10 +4422,10 @@ def make_karyotype_report(
         f'<span class="chip">{_esc(mosdepth_source)}</span>',
         f'<span class="chip">{build_label_e}</span>',
         f'<span class="chip">inferred genomic sex: {_esc(sex)}</span>',
-        f'<span class="chip">mosdepth bin: '
-        f'{_esc(_kary_format_bin_size(bin_size))}</span>',
-        f'<span class="chip">scatter bin: '
-        f'{_esc(scatter_bin_label)}</span>',
+        (f'<span class="chip">mosdepth bin: '
+         f'{_esc(_kary_format_bin_size(bin_size))}</span>'),
+        (f'<span class="chip">scatter bin: '
+         f'{_esc(scatter_bin_label)}</span>'),
         f'<span class="chip">smooth: {smooth_window_mb} Mb</span>',
         f'<span class="chip">mask: {_esc(mask_label)}</span>',
         f'<span class="chip">GC: {_esc(gc_label)}</span>',

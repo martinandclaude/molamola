@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
@@ -16,18 +17,18 @@ import molamola as mm
 
 def _make_args(tiny_regions: Path, **overrides) -> argparse.Namespace:
     """Stub Namespace with the karyotype-mode attrs the renderer reads."""
-    base = dict(
-        mosdepth=tiny_regions,
-        reference="hg38",
-        scatter_bin_kb=50.0,
-        max_points=200_000,
-        max_baf_points=80_000,
-        smooth_window_mb=0.5,
-        ymax=1.5,
-        ymin=-2.0,
-        no_mask=False,
-        no_gc=False,
-    )
+    base = {
+        "mosdepth": tiny_regions,
+        "reference": "hg38",
+        "scatter_bin_kb": 50.0,
+        "max_points": 200_000,
+        "max_baf_points": 80_000,
+        "smooth_window_mb": 0.5,
+        "ymax": 1.5,
+        "ymin": -2.0,
+        "no_mask": False,
+        "no_gc": False,
+    }
     base.update(overrides)
     return argparse.Namespace(**base)
 

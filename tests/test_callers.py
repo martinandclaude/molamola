@@ -6,7 +6,6 @@ import pytest
 
 import molamola as mm
 
-
 # --- Sniffles2 (the canonical case) ----------------------------------------
 
 def test_caller_sniffles2_round_trip(tiny_vcf):
@@ -22,7 +21,7 @@ def test_caller_sniffles2_round_trip(tiny_vcf):
 
 def test_caller_sniffles1_round_trip(repo_root):
     vcf = repo_root / "tests" / "data" / "tiny_sniffles1.vcf"
-    contigs, _bnds, svs, _ = mm.read_vcf(vcf, caller="sniffles1")
+    _contigs, _bnds, svs, _ = mm.read_vcf(vcf, caller="sniffles1")
     # Two records in the fixture (DEL + INS); SUPPORT comes from INFO
     assert {s.svtype for s in svs} == {"DEL", "INS"}
     # VAF defaults to 0 when no DR/DV available (the fixture has no FORMAT data)

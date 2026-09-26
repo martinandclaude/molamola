@@ -11,12 +11,12 @@ style the disc draws.
 from __future__ import annotations
 
 import io
+import itertools
 
 import numpy as np
 import pytest
 
 import molamola as mm
-
 
 # --- ring geometry ---------------------------------------------------------
 
@@ -34,7 +34,7 @@ def test_rings_are_ordered_outermost_first():
 def test_rings_do_not_overlap_and_keep_their_gap():
     radii = mm._circos_ring_radii()
     ordered = [radii[t] for t in mm.CIRCOS_SV_RING_ORDER]
-    for outer, inner in zip(ordered, ordered[1:]):
+    for outer, inner in itertools.pairwise(ordered):
         # Radii are (bottom, top); the gap is the outer ring's bottom
         # minus the next ring in's top.
         assert outer[0] - inner[1] == pytest.approx(mm.CIRCOS_SV_RING_GAP)

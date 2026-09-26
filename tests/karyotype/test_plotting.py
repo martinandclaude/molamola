@@ -8,7 +8,10 @@ basic geometry assertions on patch / line counts, and an
 
 from __future__ import annotations
 
+import itertools
+
 import matplotlib
+
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
@@ -124,7 +127,7 @@ def test_sex_chromosomes_get_their_own_ink():
 
 def test_adjacent_autosomes_alternate_ink():
     inks = [mm._kary_chrom_ink(f"chr{i+1}", i) for i in range(6)]
-    for a, b in zip(inks, inks[1:]):
+    for a, b in itertools.pairwise(inks):
         assert a != b
 
 
