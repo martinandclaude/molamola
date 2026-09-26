@@ -62,6 +62,8 @@ Each paired event is then a **candidate** unless one of these applies, in which 
 - every breakpoint falls inside the bundled exclusion mask (no padding: the mask is stored as 500 bp runs and covers 40 % of hg38 at 0 bp, 84 % at 1 kb);
 - the pair has the **mobile-element shape**: within 100 bp at one end (the target-site duplication of a non-reference L1 / Alu / SVA) and bounding a 100 bp – 15 kb shared segment at the other (the reference copy it aligned to).
 
+One exception: a pair demoted **only** because every breakpoint is masked is promoted back to candidate when every breakpoint also falls inside a gene (the panel says so). The mask covers 40 % of hg38 and would otherwise demote ~7–24 % of real recurrent fusions; in the ten normal call sets no mask-demoted pair had a gene at every breakpoint, so the promotion costs no measurable specificity. A synthetic inv(16) whose breakpoints happen to fall in masked runs comes out as a candidate, `CBFB::MYH11`, because of it.
+
 Tiers set display emphasis only; nothing is dropped. The trade-off is measured, not assumed. On ten normal call sets (Sniffles2 2.7.5 / 2.8.0 and cuteSV 2.1.3, hg38 and T2T), false translocation candidates fall from 13 to 1 with the mask rule. But with breakpoints uniform over MANE gene bodies, the same rule would demote 7–24 % of typical recurrent leukaemia fusions (median 11 %), all P2RY8::CRLF2 and all DUX4 events. Most false candidates that remain in normals are large Sniffles2 `INV` records, 0–6 per genome. Several recur across unrelated people, so they are either common polymorphic inversions or recurrent caller artefacts. cuteSV caps SV length at ~100 kb by default, so a cuteSV VCF may carry no large inversion at all.
 
 ## Karyotype-mode QC

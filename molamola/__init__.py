@@ -1454,6 +1454,25 @@ def find_mask_file(reference: str = "hg38") -> Path:
     return bundled
 
 
+def find_gene_file(reference: str = "hg38") -> Path:
+    """Return the bundled gene table for SV-mode breakpoint labels.
+
+    ``data/genes.<build>.bed.gz``: protein-coding genes plus the IG / TR
+    loci, from NCBI RefSeq annotation release RS_2025_08, which annotates
+    GRCh38 and T2T-CHM13v2.0 natively in one run - the same symbols on
+    both builds, and no liftover. ``scripts/derive_gene_tables.py``
+    regenerates them.
+    """
+    build = "t2t" if reference == "t2t" else "hg38"
+    bundled = Path(__file__).resolve().parent / "data" / f"genes.{build}.bed.gz"
+    if not bundled.exists():
+        raise FileNotFoundError(
+            f"bundled gene table missing: {bundled} (expected to ship "
+            f"with molamola)",
+        )
+    return bundled
+
+
 def find_gc_file(reference: str = "hg38") -> Path:
     """Return the bundled karyotype-mode GC table path (10 kb bins).
 
@@ -2778,12 +2797,20 @@ class Rearrangement:
       which);
     - ``"single"`` - unpaired. Unbalanced events are singles by nature;
       they are the karyogram's job.
+
+    A pair demoted *only* because every breakpoint is masked is promoted
+    back to candidate when every breakpoint also falls inside a gene, and
+    ``notes`` says so. The mask covers 40 % of hg38 and catches ~7-24 %
+    of real recurrent fusions; in ten normal call sets no mask-demoted
+    pair had a gene at every breakpoint, so the promotion costs nothing
+    measurable in specificity.
     """
 
     kind: str
     junctions: tuple
     tier: str
     reasons: tuple = ()
+    notes: tuple = ()
 
     @property
     def support(self) -> int:
@@ -2855,6 +2882,7 @@ def classify_rearrangements(
     junctions: list[Junction],
     cytobands: dict,
     mask: dict | None,
+    genes: dict | None = None,
 ) -> list[Rearrangement]:
     """Pair junctions into events and assign each a display tier.
 
@@ -2862,6 +2890,9 @@ def classify_rearrangements(
     insertion-like pairs among what is left; anything unpaired is a
     single. ``mask`` is the exclusion mask from
     :func:`load_mask_intervals`, or ``None`` to skip the mask rule.
+    ``genes`` (from :func:`load_gene_table`) enables the promotion of
+    masked pairs whose every breakpoint is in a gene; see
+    :class:`Rearrangement`.
     """
     free = list(junctions)
     events: list[Rearrangement] = []
@@ -2912,7 +2943,22 @@ def classify_rearrangements(
             reasons.append("all breakpoints masked")
         ev.reasons = tuple(reasons)
         ev.tier = "repeat" if reasons else "candidate"
+        if (genes is not None and ev.reasons == ("all breakpoints masked",)
+                and all(genes_at(genes, c, p) for c, p in pts)):
+            ev.tier, ev.reasons = "candidate", ()
+            ev.notes = ("breakpoints masked; kept because every one "
+                        "falls in a gene",)
     return events
+
+
+def ordered_candidates(events: list[Rearrangement]) -> list[Rearrangement]:
+    """Candidates in genome order - the numbering shared by the circos
+    badges, its candidate key and the derivative-chromosome panels."""
+    return sorted(
+        (e for e in events if e.tier == "candidate"),
+        key=lambda e: (CHROM_ORDER.index(e.junctions[0].chr_a),
+                       np.mean([j.pos_a for j in e.junctions])),
+    )
 
 
 def rearrangement_label(ev: Rearrangement, cytobands: dict) -> str:
@@ -2944,6 +2990,158 @@ def rearrangement_label(ev: Rearrangement, cytobands: dict) -> str:
                 f"({band(rc, rp)};{band(dc, d1)}{band(dc, d2)})")
     return (f"{na}{band(j.chr_a, j.pos_a)}::{nb}{band(j.chr_b, j.pos_b)} "
             f"(single junction)")
+
+
+#: A breakpoint outside every gene is labelled with the nearest gene
+#: within this distance. Wide on purpose: enhancer-hijacking breakpoints
+#: (MECOM in inv(3), MYC, the IG loci's targets) often sit hundreds of
+#: kb from the gene they drive.
+GENE_NEAR_WINDOW: int = 500_000
+
+
+@dataclass
+class Gene:
+    name: str
+    start: int
+    end: int
+    strand: str
+
+    @property
+    def is_locus(self) -> bool:
+        """IG / TR loci carry no strand: they are named, not fused."""
+        return self.strand == "."
+
+
+def load_gene_table(path: Path) -> dict[str, tuple]:
+    """Read a ``genes.<build>.bed.gz`` into per-chromosome sorted arrays.
+
+    Returns ``{chrom: (starts, ends, genes, longest)}`` where ``genes``
+    is a list of :class:`Gene` in start order and ``longest`` bounds how
+    far back an overlap search has to look.
+    """
+    rows: dict[str, list[Gene]] = {}
+    with open_text(path) as fh:
+        for line in fh:
+            f = line.rstrip("\n").split("\t")
+            if len(f) < 6:
+                continue
+            rows.setdefault(_normalize_chrom(f[0]), []).append(
+                Gene(f[3], int(f[1]), int(f[2]), f[5]))
+    out = {}
+    for chrom, genes in rows.items():
+        genes.sort(key=lambda g: g.start)
+        out[chrom] = (
+            np.array([g.start for g in genes]),
+            np.array([g.end for g in genes]),
+            genes,
+            max(g.end - g.start for g in genes),
+        )
+    return out
+
+
+def genes_at(table: dict, chrom: str, pos: int) -> list[Gene]:
+    """Genes whose span contains ``pos``. An IG / TR locus wins over any
+    protein-coding gene inside it."""
+    if chrom not in table:
+        return []
+    starts, ends, genes, longest = table[chrom]
+    i = int(np.searchsorted(starts, pos, side="right"))
+    lo = int(np.searchsorted(starts, pos - longest, side="left"))
+    hits = [genes[k] for k in range(lo, i) if ends[k] > pos]
+    loci = [g for g in hits if g.is_locus]
+    return loci or hits
+
+
+def nearest_gene(table: dict, chrom: str, pos: int,
+                 window: int | None = None) -> tuple[Gene, int] | None:
+    """The closest gene within ``window`` (default
+    :data:`GENE_NEAR_WINDOW`), with its distance in bp."""
+    if window is None:
+        window = GENE_NEAR_WINDOW
+    if chrom not in table:
+        return None
+    starts, ends, genes, longest = table[chrom]
+    lo = int(np.searchsorted(starts, pos - window - longest, side="left"))
+    hi = int(np.searchsorted(starts, pos + window, side="right"))
+    best = None
+    for k in range(lo, hi):
+        d = max(starts[k] - pos, pos - ends[k], 0)
+        if d <= window and (best is None or d < best[1]):
+            best = (genes[k], int(d))
+    return best
+
+
+def breakpoint_gene_label(table: dict, chrom: str, pos: int) -> str:
+    """``RUNX1``, ``GENE1/GENE2``, ``near MECOM (120 kb)`` or ``""``."""
+    hits = genes_at(table, chrom, pos)
+    if hits:
+        names = sorted({g.name for g in hits})
+        return "/".join(names[:2]) + (f" +{len(names) - 2}" if len(names) > 2 else "")
+    near = nearest_gene(table, chrom, pos)
+    if near:
+        return f"near {near[0].name} ({max(1, round(near[1] / 1000))} kb)"
+    return ""
+
+
+def _gene_end(side: str, strand: str) -> str:
+    """Which end of a gene a junction keeps: ``"5"`` or ``"3"``.
+
+    Keeping the left of a breakpoint keeps the 5' part of a plus-strand
+    gene (it is transcribed toward the junction) and the 3' part of a
+    minus-strand one; keeping the right is the mirror image.
+    """
+    return "5" if (side == "L") == (strand == "+") else "3"
+
+
+def junction_fusion(table: dict, j: Junction) -> str:
+    """The 5'::3' fusion a junction joins, or ``""``.
+
+    Both breakpoints must fall in genes, and the kept sides and strands
+    must line the two genes up head to tail: one contributes its 5' end,
+    the other its 3' end. An IG / TR locus has no strand - its
+    rearrangements drive the partner rather than fuse with it - so it is
+    written first (``IGH::CRLF2``) whenever the partner is a gene. The
+    same gene at both ends (an intragenic event) is not a fusion.
+    """
+    ga = genes_at(table, j.chr_a, j.pos_a)
+    gb = genes_at(table, j.chr_b, j.pos_b)
+    for x, y in ((ga, gb), (gb, ga)):
+        loc = next((g for g in x if g.is_locus), None)
+        partner = next((g for g in y if not g.is_locus), None)
+        if loc and partner:
+            return f"{loc.name}::{partner.name}"
+    for a in ga:
+        for b in gb:
+            if a.name == b.name or a.is_locus or b.is_locus:
+                continue
+            ea, eb = _gene_end(j.side_a, a.strand), _gene_end(j.side_b, b.strand)
+            if (ea, eb) == ("5", "3"):
+                return f"{a.name}::{b.name}"
+            if (ea, eb) == ("3", "5"):
+                return f"{b.name}::{a.name}"
+    return ""
+
+
+def event_fusions(ev: Rearrangement, genes: dict | None) -> list[str]:
+    """Distinct fusion names across an event's junctions, in order."""
+    if genes is None:
+        return []
+    out: list[str] = []
+    for j in ev.junctions:
+        f = junction_fusion(genes, j)
+        if f and f not in out:
+            out.append(f)
+    return out
+
+
+def event_title(ev: Rearrangement, cytobands: dict,
+                genes: dict | None = None) -> str:
+    """ISCN name plus the fusion it makes, when there is one:
+    ``t(8;21)(q21.3;q22.12)  RUNX1::RUNX1T1``. Only the first fusion is
+    shown - a reciprocal pair's second junction is its mirror image."""
+    fusions = event_fusions(ev, genes)
+    label = rearrangement_label(ev, cytobands)
+    return f"{label}  {fusions[0]}" if fusions else label
 
 
 def rearrangement_summary(events: list[Rearrangement]) -> str:
@@ -3172,6 +3370,7 @@ class _Arc:
     non_pass: bool
     ident: str
     name: str = ""
+    number: int | None = None
 
 
 def _arc_region(chrom: str, pos: int, contigs: dict,
@@ -3183,7 +3382,7 @@ def _arc_region(chrom: str, pos: int, contigs: dict,
 
 
 def _circos_arcs(events: list, extra_bnds: list[BND], contigs: dict,
-                 cytobands: dict) -> list[_Arc]:
+                 cytobands: dict, genes: dict | None = None) -> list[_Arc]:
     """Arcs for classified events plus any BND no event covers.
 
     A paired event is one arc at the mean position of its two junctions
@@ -3192,6 +3391,7 @@ def _circos_arcs(events: list, extra_bnds: list[BND], contigs: dict,
     ones, or when no events were passed) are drawn as single junctions.
     """
     arcs: list[_Arc] = []
+    number = {id(ev): n for n, ev in enumerate(ordered_candidates(events), 1)}
     for ev in events:
         js = ev.junctions
         j0 = js[0]
@@ -3214,8 +3414,9 @@ def _circos_arcs(events: list, extra_bnds: list[BND], contigs: dict,
             noisy=any(j.noise_flags for j in js),
             non_pass=not all(j.is_pass for j in js),
             ident="+".join(i for j in js for i in j.sv_ids),
-            name=(rearrangement_label(ev, cytobands)
+            name=(event_title(ev, cytobands, genes)
                   if ev.tier == "candidate" else ""),
+            number=number.get(id(ev)),
         ))
     for b in extra_bnds:
         if b.chr1 not in contigs or b.chr2 not in contigs:
@@ -3415,7 +3616,7 @@ def _add_circos_legends(
     bin_size: int,
     *,
     any_non_pass: bool,
-    candidate_names: list[str] | None = None,
+    candidates: list[tuple[int, str]] | None = None,
 ) -> list:
     """Attach the circos keys: rings, arcs, candidates, cytobands.
 
@@ -3484,11 +3685,13 @@ def _add_circos_legends(
         title="BND arcs (colour = VAF, width = read support)", **style,
     )
 
-    names = list(candidate_names or [])
-    shown = names[:CIRCOS_MAX_NAMED_CANDIDATES]
-    cand_labels = [f"{n}   {name}" for n, name in enumerate(shown, 1)]
-    if len(names) > len(shown):
-        cand_labels.append(f"... and {len(names) - len(shown)} more")
+    named = list(candidates or [])
+    shown = named[:CIRCOS_MAX_NAMED_CANDIDATES]
+    cand_labels = [f"{n}   {name}" for n, name in shown]
+    # Candidates beyond the cap still have badges; their names are in
+    # the report's panels.
+    if len(named) > len(shown):
+        cand_labels.append(f"... and {len(named) - len(shown)} more")
     if not cand_labels:
         cand_labels = ["none"]
     cand = fig.legend(
@@ -3521,6 +3724,7 @@ def plot_circos(
     *,
     bin_size: int = 1_000_000,
     events: list | None = None,
+    genes: dict | None = None,
 ) -> None:
     """Render the circos plot (SV density rings + BND ribbons on cytobands).
 
@@ -3558,6 +3762,9 @@ def plot_circos(
         (:data:`ARC_TIER_STYLE`), and candidates are numbered and named.
         BNDs in ``bnds_unique`` that no event covers are drawn as single
         junctions; with no events, every BND is.
+    genes : dict, optional
+        Gene table from :func:`load_gene_table`; adds fusion names to
+        the candidate key.
     """
     import tempfile
 
@@ -3616,17 +3823,16 @@ def plot_circos(
                for i in j.sv_ids}
     arcs = _circos_arcs(
         events or [], [b for b in bnds_unique if b.sv_id not in covered],
-        contigs, load_cytobands(cytoband_path),
+        contigs, load_cytobands(cytoband_path), genes,
     )
     supports = np.array([a.support for a in arcs], dtype=float)
     smax = supports.max() if supports.size else 1.0
 
-    # Candidates are numbered in genome order; the number sits on a badge
-    # at each of their breakpoints and against their name beside the disc.
-    candidates = sorted(
-        (a for a in arcs if a.tier == "candidate" and not a.noisy),
-        key=lambda a: (CHROM_ORDER.index(a.region1[0]), a.region1[1]),
-    )
+    # Candidates are numbered in genome order (ordered_candidates, shared
+    # with the derivative panels); the number sits on a badge at each of
+    # their breakpoints and against their name beside the disc.
+    candidates = sorted((a for a in arcs if a.number is not None),
+                        key=lambda a: a.number)
 
     # Arcs start at the inner edge of the ring stack, so translocations
     # occupy the disk and located events occupy the rings - the same
@@ -3650,8 +3856,8 @@ def plot_circos(
             mid = (a.region1[1] + a.region1[2]) // 2
             pending_labels.append((a.region1[0], mid, a.vaf, color, a.ident))
 
-    badges = [(chrom, (lo + hi) / 2, n)
-              for n, a in enumerate(candidates, 1)
+    badges = [(chrom, (lo + hi) / 2, a.number)
+              for a in candidates
               for chrom, lo, hi in (a.region1, a.region2)]
     for chrom, pos, r, n in _place_badges(badges, contigs):
         circos.get_sector(chrom).text(
@@ -3705,7 +3911,7 @@ def plot_circos(
     legends = _add_circos_legends(
         fig, n_svs_by_type, bin_size,
         any_non_pass=any(a.non_pass for a in arcs),
-        candidate_names=[a.name for a in candidates],
+        candidates=[(a.number, a.name) for a in candidates],
     )
 
     fig.set_facecolor(PAPER_BG)
@@ -3717,6 +3923,288 @@ def plot_circos(
     # Clean up the staged tempdir.
     import shutil
     shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# B) Derivative-chromosome panels
+# ---------------------------------------------------------------------------
+#
+# One panel per candidate rearrangement: the normal chromosomes beside the
+# derivatives the junctions build, G-banded, breakpoints marked with band
+# and gene, junctions with the fusion they make. This is the view a
+# cytogeneticist reads a karyotype in, and the one a depth-based karyotype
+# cannot give for a balanced event.
+
+#: Most panels in one report; further candidates are counted, not drawn.
+PANEL_MAX: int = 12
+
+#: Paint-bar colours marking which chromosome each derivative segment
+#: came from: navy and burnt orange, separable under all three
+#: dichromacies (a blue-yellow axis pair).
+PANEL_SOURCE_COLORS: tuple[str, str] = ("#1F4F7A", "#C0612B")
+
+#: Breakpoint marker colour (the karyotype figure's rose).
+PANEL_BREAK_COLOR: str = "#DC5A99"
+
+#: Chromosome width, in the panel's x units (one unit per column).
+_PANEL_W: float = 0.30
+
+
+def _centromere(cytobands: dict, chrom: str) -> int:
+    """Position of the centromere: the p / q boundary inside acen."""
+    acen = [(s, e, n) for s, e, n, st in cytobands.get(chrom, [])
+            if st == "acen"]
+    p_arm = [e for s, e, n in acen if n.startswith("p")]
+    if p_arm:
+        return max(p_arm)
+    if acen:
+        return (acen[0][0] + acen[-1][1]) // 2
+    return 0
+
+
+def _chrom_len(cytobands: dict, chrom: str) -> int:
+    return max((e for _s, e, _n, _st in cytobands.get(chrom, [])), default=0)
+
+
+def _flip(pieces: list[tuple]) -> list[tuple]:
+    return [(c, a, b, not r) for c, a, b, r in reversed(pieces)]
+
+
+def _orient(pieces: list[tuple], cytobands: dict) -> tuple[list[tuple], str]:
+    """Orient a derivative pter-up and name it by its centromere.
+
+    A derivative is drawn the way its centromere-bearing chromosome
+    reads: if that segment is reversed, the whole derivative flips.
+    Returns ``(pieces, name)`` - ``der(8)``, ``dic(8;21)`` for two
+    centromeres, ``ace(...)`` for none.
+    """
+    cen = [(i, p) for i, p in enumerate(pieces)
+           if p[1] <= _centromere(cytobands, p[0]) < p[2]]
+    if len(cen) == 1 and cen[0][1][3]:
+        pieces = _flip(pieces)
+        cen = [(len(pieces) - 1 - i, p) for i, p in cen]
+    names = sorted({p[0].replace("chr", "") for _i, p in cen},
+                   key=lambda c: CHROM_ORDER.index("chr" + c))
+    if len(names) == 1:
+        return pieces, f"der({names[0]})"
+    if names:
+        return pieces, f"dic({';'.join(names)})"
+    return pieces, "ace(" + ";".join(sorted({p[0].replace('chr', '') for p in pieces})) + ")"
+
+
+def _junction_derivative(j: Junction, cytobands: dict) -> list[tuple]:
+    """The two segments a junction joins, in reading order.
+
+    A segment kept on its left ends at the junction; one kept on its
+    right starts there. When both keep the same side, the second one is
+    joined reverse-complemented.
+    """
+    def kept(chrom, pos, side):
+        return ((chrom, 0, pos, False) if side == "L"
+                else (chrom, pos, _chrom_len(cytobands, chrom), False))
+
+    pa = kept(j.chr_a, j.pos_a, j.side_a)
+    pb = kept(j.chr_b, j.pos_b, j.side_b)
+    if j.side_a == "L":
+        second = pb if j.side_b == "R" else (*pb[:3], True)
+        return [pa, second]
+    first = pb if j.side_b == "L" else (*pb[:3], True)
+    return [first, pa]
+
+
+def panel_columns(ev: Rearrangement, cytobands: dict) -> list[tuple]:
+    """Columns for one panel: ``(label, pieces, junction_marks)``.
+
+    ``pieces`` are ``(chrom, start, end, reversed)`` segments from pter
+    down; ``junction_marks`` pairs a boundary index (0 = between the first
+    and second segment) with the :class:`Junction` it shows, so the panel
+    can label it with the fusion.
+    """
+    j, k = ev.junctions[0], ev.junctions[-1]
+    L = functools.partial(_chrom_len, cytobands)
+
+    def normal(chrom):
+        return (chrom.replace("chr", ""), [(chrom, 0, L(chrom), False)], [])
+
+    if ev.kind == "translocation":
+        ders = []
+        for jj in ev.junctions:
+            pieces, name = _orient(_junction_derivative(jj, cytobands),
+                                   cytobands)
+            ders.append((name, pieces, [(0, jj)]))
+        by_home = {d[0]: d for d in ders}
+        cols = []
+        for chrom in (j.chr_a, j.chr_b):
+            cols.append(normal(chrom))
+            n = chrom.replace("chr", "")
+            if f"der({n})" in by_home:
+                cols.append(by_home.pop(f"der({n})"))
+        return cols + list(by_home.values())
+
+    if ev.kind == "inversion":
+        s = int(np.mean([x.pos_a for x in ev.junctions]))
+        e = int(np.mean([x.pos_b for x in ev.junctions]))
+        c = j.chr_a
+        left = next(x for x in ev.junctions if x.side_a == "L")
+        right = next(x for x in ev.junctions if x.side_a == "R")
+        inv = [(c, 0, s, False), (c, s, e, True), (c, e, L(c), False)]
+        return [normal(c),
+                (f"inv({c.replace('chr', '')})", inv, [(0, left), (1, right)])]
+
+    if ev.kind == "insertion":
+        rec = "a" if _ends(j, k, "a")[0] <= _ends(j, k, "b")[0] else "b"
+        don = "b" if rec == "a" else "a"
+        rc, dc = getattr(j, "chr_" + rec), getattr(j, "chr_" + don)
+        p = int(np.mean([getattr(x, "pos_" + rec) for x in (j, k)]))
+        x0, x1 = sorted(getattr(x, "pos_" + don) for x in (j, k))
+        into = next(x for x in (j, k) if getattr(x, "side_" + rec) == "L")
+        outof = next(x for x in (j, k) if x is not into)
+        # The junction leaving the recipient's left side enters the
+        # segment at its lower end when it keeps the donor's right.
+        rev = getattr(into, "side_" + don) == "L"
+        der_r = [(rc, 0, p, False), (dc, x0, x1, rev), (rc, p, L(rc), False)]
+        der_d = [(dc, 0, x0, False), (dc, x1, L(dc), False)]
+        rn, dn = rc.replace("chr", ""), dc.replace("chr", "")
+        return [normal(rc), (f"der({rn})", der_r, [(0, into), (1, outof)]),
+                normal(dc), (f"der({dn})", der_d, [])]
+    return []
+
+
+def _draw_panel_chrom(ax, x: float, pieces: list[tuple], scale: float,
+                      cytobands: dict, colours: dict) -> list[float]:
+    """Draw one ideogram top-down; return the y of each segment boundary."""
+    y, bounds = 0.0, []
+    for chrom, a, b, rev in pieces:
+        bands = [(max(s, a), min(e, b), st)
+                 for s, e, _n, st in cytobands.get(chrom, []) if s < b and e > a]
+        if rev:
+            bands = bands[::-1]
+        top = y
+        for s, e, st in bands:
+            h = (e - s) / 1e6 * scale
+            if st == "acen":
+                # pinch toward the p / q boundary
+                towards_bottom = (s < _centromere(cytobands, chrom)) != rev
+                w0, w1 = (_PANEL_W / 2, _PANEL_W * 0.12)
+                if not towards_bottom:
+                    w0, w1 = w1, w0
+                ax.add_patch(mpatches.Polygon(
+                    [(x - w0, y), (x + w0, y), (x + w1, y - h), (x - w1, y - h)],
+                    closed=True, facecolor=CYTOBAND_COLORS["acen"],
+                    edgecolor=KARY_INK, lw=0.5))
+            else:
+                ax.add_patch(mpatches.Rectangle(
+                    (x - _PANEL_W / 2, y - h), _PANEL_W, h, lw=0,
+                    facecolor=CYTOBAND_COLORS.get(st, "#FFFFFF")))
+            y -= h
+        if len(pieces) > 1:
+            ax.add_patch(mpatches.Rectangle(
+                (x - _PANEL_W / 2 - 0.09, y), 0.045, top - y, lw=0,
+                facecolor=colours.get(chrom, KARY_INK_2)))
+            if rev:
+                ax.annotate("", xy=(x - _PANEL_W / 2 - 0.15, y + 0.03 * (top - y)),
+                            xytext=(x - _PANEL_W / 2 - 0.15, top - 0.03 * (top - y)),
+                            arrowprops=dict(arrowstyle="-|>", color=KARY_INK_2,
+                                            lw=0.8))
+        bounds.append(y)
+    for dx in (-_PANEL_W / 2, _PANEL_W / 2):
+        ax.plot([x + dx, x + dx], [0, y], color=KARY_INK, lw=0.8)
+    for yy in (0, y):
+        ax.plot([x - _PANEL_W / 2, x + _PANEL_W / 2], [yy, yy],
+                color=KARY_INK, lw=0.8)
+    return bounds[:-1]
+
+
+def render_rearrangement_panel(
+    ev: Rearrangement,
+    number: int,
+    cytobands: dict,
+    genes: dict | None,
+    reference: str,
+) -> bytes:
+    """Render one candidate's derivative-chromosome panel to PNG bytes."""
+    cols = panel_columns(ev, cytobands)
+    if not cols:
+        return b""
+    chroms = list(dict.fromkeys(p[0] for _l, pcs, _m in cols for p in pcs))
+    colours = {c: PANEL_SOURCE_COLORS[i % 2] for i, c in enumerate(chroms)}
+    longest = max(sum(b - a for _c, a, b, _r in pcs) for _l, pcs, _m in cols)
+    height = 5.6
+    scale = 100.0 / (longest / 1e6)  # the longest column spans 100 units
+    fig_w = max(5.2, 2.45 * len(cols) + 0.6)
+    fonts = _kary_resolve_fonts(KARY_FONT_SANS)
+
+    with plt.rc_context({"font.family": list(fonts)}):
+        fig, ax = plt.subplots(figsize=(fig_w, height + 1.9))
+        fig.set_facecolor(PAPER_BG)
+        ax.set_facecolor(PAPER_BG)
+        ax.axis("off")
+        top_pad = 15.0
+        ax.set_xlim(-0.35, len(cols) - 0.25)
+        ax.set_ylim(-longest / 1e6 * scale - 6, top_pad + 2)
+
+        for i, (label, pieces, marks) in enumerate(cols):
+            x = float(i)
+            bounds = _draw_panel_chrom(ax, x, pieces, scale, cytobands, colours)
+            ax.text(x, 1.2, label, ha="center", va="bottom", fontsize=10,
+                    fontweight="bold", color=KARY_INK)
+            if len(pieces) == 1:
+                # normal homologue: mark each breakpoint with band + gene
+                chrom = pieces[0][0]
+                pts = [(c, p) for c, p in ev.breakpoints() if c == chrom]
+                for c, p in pts:
+                    y = -p / 1e6 * scale
+                    band = resolve_cytoband(c, p, cytobands)
+                    gene = breakpoint_gene_label(genes, c, p) if genes else ""
+                    ax.plot([x - _PANEL_W / 2 - 0.03, x + _PANEL_W / 2 + 0.03],
+                            [y, y], color=PANEL_BREAK_COLOR, lw=1.6)
+                    ax.text(x + _PANEL_W / 2 + 0.07, y,
+                            f"{band}  {gene}".rstrip(), va="center",
+                            fontsize=7.5, color=KARY_INK, style="italic")
+            for boundary, junc in marks:
+                y = bounds[boundary]
+                fusion = junction_fusion(genes, junc) if genes else ""
+                ax.plot([x - _PANEL_W / 2 - 0.03, x + _PANEL_W / 2 + 0.03],
+                        [y, y], color=PANEL_BREAK_COLOR, lw=1.6)
+                if fusion:
+                    ax.text(x + _PANEL_W / 2 + 0.07, y, fusion, va="center",
+                            fontsize=7.5, color=KARY_INK, style="italic")
+
+        fusions = event_fusions(ev, genes)
+        title = f"{number}   {rearrangement_label(ev, cytobands)}"
+        ax.text(-0.35, top_pad, title, fontsize=12.5, fontweight="bold",
+                color=KARY_INK, va="bottom", family="monospace")
+        # One INV record implies both junctions; say so rather than
+        # presenting the same record twice as independent evidence.
+        records = list({x.sv_ids: x for x in ev.junctions}.values())
+        from_inv = all(x.source == "INV" for x in ev.junctions)
+        sub = [
+            ("1 INV record" if from_inv and len(records) == 1
+             else f"{len(ev.junctions)} junctions"),
+            "support " + " / ".join(str(x.support) for x in records),
+            "VAF " + " / ".join(f"{round(x.vaf * 100)} %" for x in records),
+        ]
+        if fusions:
+            sub.insert(0, ", ".join(fusions))
+        ax.text(-0.35, top_pad - 1.2, "    ".join(sub), fontsize=8.5,
+                color=KARY_INK_2, va="top")
+        if ev.notes:
+            ax.text(-0.35, top_pad - 5.0, "; ".join(ev.notes), fontsize=7.5,
+                    color=KARY_INK_2, va="top", style="italic")
+        coords = "    ".join(dict.fromkeys(
+            f"{x.chr_a}:{x.pos_a:,} :: {x.chr_b}:{x.pos_b:,}"
+            for x in ev.junctions))
+        build = _BUILD_LABEL.get(reference, reference)
+        ax.text(-0.35, -longest / 1e6 * scale - 4.5,
+                f"{coords}  ({build})    paint bar = source chromosome"
+                + ("    arrow = inverted segment"
+                   if any(p[3] for _l, pcs, _m in cols for p in pcs) else ""),
+                fontsize=7, color=KARY_INK_2, va="bottom")
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=170, bbox_inches="tight",
+                    facecolor=PAPER_BG)
+        plt.close(fig)
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -3759,6 +4247,8 @@ header svg.banner { display: block; width: 100%; height: auto;
 .figure h2 .sample { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
                      color: var(--fg); }
 .figure img { max-width: 100%; height: auto; }
+.panels img { display: block; margin: 1.6em auto; }
+.note { color: var(--muted); font-size: 0.9em; }
 details.meta { margin: 3em 0 1em; padding: 0.8em 1em; background: #fafafa;
                border: 1px solid var(--border); border-radius: 6px; }
 details.meta > summary { cursor: pointer; font-weight: 500; color: var(--muted);
@@ -3792,6 +4282,8 @@ def make_html_report(
     caller: str,
     caller_basis: str,
     rearrangements: str = "",
+    panels: list[tuple[int, str, bytes]] | None = None,
+    n_candidates: int = 0,
 ) -> None:
     """Write a single-file, self-contained HTML report to ``out_path``.
 
@@ -3835,7 +4327,8 @@ def make_html_report(
         f"<section class=\"figure\" id=\"fig-circos\">\n"
         f"  <img src=\"{circos_uri}\" alt=\"circos plot for {sample_e}\">\n"
         f"</section>\n"
-        f"<details class=\"meta\">\n"
+        + _panels_html(panels or [], n_candidates)
+        + f"<details class=\"meta\">\n"
         f"  <summary>run metadata</summary>\n"
         f"  <div class=\"chips\">\n"
         f"    <span class=\"chip {caller_chip_class}\">{_esc(caller_chip_text)}</span>\n"
@@ -3855,6 +4348,25 @@ def make_html_report(
         "</body></html>\n"
     )
     out_path.write_text(html)
+
+
+def _panels_html(panels: list[tuple[int, str, bytes]], n_candidates: int) -> str:
+    """The derivative-chromosome panel section, or nothing without
+    candidates. Panels are figures, one per candidate - not a table."""
+    if not panels:
+        return ""
+    imgs = "".join(
+        f"  <img src=\"data:image/png;base64,"
+        f"{base64.b64encode(png).decode('ascii')}\" "
+        f"alt=\"rearrangement {n}: {_esc(title)}\">\n"
+        for n, title, png in panels
+    )
+    more = n_candidates - len(panels)
+    note = (f"  <p class=\"note\">{more} further candidate"
+            f"{'' if more == 1 else 's'} not drawn; see the circos key.</p>\n"
+            if more > 0 else "")
+    return (f"<section class=\"figure panels\" id=\"fig-rearrangements\">\n"
+            f"{imgs}{note}</section>\n")
 
 
 def make_karyotype_report(
@@ -4364,9 +4876,10 @@ def plot_main(args: argparse.Namespace) -> int:
     # BND still finds its reciprocal partner.
     inv_records = [s for s in svs if s.svtype == "INV"
                    and (s.is_pass or args.filter == "all")]
+    genes = load_gene_table(find_gene_file(args.reference))
     events = classify_rearrangements(
         collect_junctions(unique_bnds, inv_records), cytobands,
-        load_mask_intervals(find_mask_file(args.reference)),
+        load_mask_intervals(find_mask_file(args.reference)), genes,
     )
     print(f"Rearrangements: {rearrangement_summary(events)}")
     event_label = {
@@ -4449,7 +4962,20 @@ def plot_main(args: argparse.Namespace) -> int:
     plot_circos(unique_bnds, svs, plot_contigs, cytoband_file,
                 circos_buf, sample,
                 plot_vaf=args.plotvaf, bin_size=args.bin_size,
-                events=draw_events)
+                events=draw_events, genes=genes)
+
+    # One derivative-chromosome panel per candidate, numbered as on the
+    # circos. Capped; the rest are counted in the report.
+    candidates = ordered_candidates(draw_events)
+    panels = []
+    for n, ev in enumerate(candidates[:PANEL_MAX], 1):
+        png = render_rearrangement_panel(ev, n, cytobands, genes,
+                                         args.reference)
+        if png:
+            panels.append((n, event_title(ev, cytobands, genes), png))
+    for n, ev in enumerate(candidates, 1):
+        print(f"  candidate {n}: {event_title(ev, cytobands, genes)}"
+              + (f"  [{ev.notes[0]}]" if ev.notes else ""))
 
     out_html = out_dir / f"{sample}{focus_tag}.report.html"
     make_html_report(
@@ -4467,6 +4993,8 @@ def plot_main(args: argparse.Namespace) -> int:
         caller=caller,
         caller_basis=basis,
         rearrangements=rearrangement_summary(events),
+        panels=panels,
+        n_candidates=len(candidates),
     )
     print(f"wrote {out_html}")
     if args.png:
@@ -4474,6 +5002,10 @@ def plot_main(args: argparse.Namespace) -> int:
         circos_path = out_dir / f"{base}.circos.png"
         circos_path.write_bytes(circos_buf.getvalue())
         print(f"wrote {circos_path}")
+        for n, _title, png in panels:
+            panel_path = out_dir / f"{base}.rearrangement_{n}.png"
+            panel_path.write_bytes(png)
+            print(f"wrote {panel_path}")
     return 0
 
 

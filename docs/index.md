@@ -68,6 +68,16 @@ at a glance. On this normal genome the only candidates are large
 inversion calls, which are common polymorphisms or recurrent caller
 artefacts.
 
+### Derivative-chromosome panels
+
+![Derivative-chromosome panel](example_rearrangement_panel.png)
+
+Below the circos, each candidate gets a panel in the form a
+cytogeneticist reads a karyotype in: the normal chromosomes beside the
+derivatives the junctions build, breakpoints labelled with band and
+gene, and junctions with the fusion they make (5'::3'). Shown here for
+synthetic t(8;21) breakpoints -- an illustration, not a sample.
+
 ## Bundled references
 
 molamola ships its own reference data inside `molamola/data/`:
@@ -81,10 +91,14 @@ molamola ships its own reference data inside `molamola/data/`:
 - `gc_10kb.hg38.bed.gz`, `gc_10kb.t2t.bed.gz` — 10 kb GC tables
   driving karyotype mode's per-1 % GC-bucket median-ratio
   correction.
+- `genes.hg38.bed.gz`, `genes.t2t.bed.gz` — protein-coding genes and
+  the IG / TR loci for breakpoint and fusion labels, from NCBI RefSeq
+  annotation release RS_2025_08 (native on both builds, same symbols).
 
 Bundled-only by design: molamola does not auto-download or look up
-online. The karyotype refs are reproducibly regeneratable from
-public sources via `scripts/derive_karyotype_refs.py` in the repo.
+online. The bundled refs are reproducibly regeneratable from public
+sources via `scripts/derive_karyotype_refs.py` and
+`scripts/derive_gene_tables.py` in the repo.
 
 > **Compound-het mode was removed after v0.5.1.** The per-gene
 > phased-haplotype panels for recessive-disease workup, and the

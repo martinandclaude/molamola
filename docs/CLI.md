@@ -25,7 +25,7 @@ See [`FILTERS.md`](FILTERS.md) for what every threshold does. See [`OUTPUTS.md`]
 | `--out DIR` | **required** | output directory (created if absent). molamola exits 2 with a usage error if omitted, rather than silently writing next to the input. Filenames: `<sample>.report.html` (SV), `<sample>.karyotype.report.html` (karyotype). |
 | `--reference {hg38,t2t}` | `hg38` | reference assembly the input was called against. Both modes support hg38 and T2T-CHM13v2.0. |
 | `--sample NAME` | input basename | sample label shown in the report header. |
-| `--png` | off | also write each embedded figure as a standalone PNG alongside the HTML (for MultiQC / pipeline embeds). SV mode writes `<sample>.report.circos.png`; karyotype mode writes `<sample>.karyotype.genome.png`. |
+| `--png` | off | also write each embedded figure as a standalone PNG alongside the HTML (for MultiQC / pipeline embeds). SV mode writes `<sample>.report.circos.png` and one `<sample>.report.rearrangement_<n>.png` per candidate panel; karyotype mode writes `<sample>.karyotype.genome.png`. |
 | `--force` | off | bypass the safety check that errors out when the input filename hints at a reference different from `--reference` (e.g. `sample.t2t.vcf` with `--reference hg38`). |
 
 ## SV-mode flags

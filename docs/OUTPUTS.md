@@ -2,10 +2,10 @@
 
 Each run writes a single self-contained HTML artefact into `--out` (required — molamola refuses rather than silently writing next to the input file; the directory is created if absent). The filename and contents differ by mode:
 
-- **SV mode** → `<sample>.report.html` (the circos plot embedded as a base64 PNG data URI, plus a collapsible run-metadata block).
+- **SV mode** → `<sample>.report.html` (the circos plot, then one derivative-chromosome panel per candidate rearrangement, embedded as base64 PNG data URIs, plus a collapsible run-metadata block).
 - **Karyotype mode** → `<sample>.karyotype.report.html` (one genome-wide CN figure, with a BAF panel beneath when `--vcf` is supplied; same metadata block).
 
-With `--png` (added in v0.2.0 for MultiQC / pipeline embeds), each embedded figure is *also* written as a standalone PNG alongside the HTML — SV mode writes `<sample>.report.circos.png`, karyotype mode writes `<sample>.karyotype.genome.png`. Without `--png` the figures live only inside the HTML; right-click → save to extract one ad hoc.
+With `--png` (added in v0.2.0 for MultiQC / pipeline embeds), each embedded figure is *also* written as a standalone PNG alongside the HTML — SV mode writes `<sample>.report.circos.png` and one `<sample>.report.rearrangement_<n>.png` per panel, karyotype mode writes `<sample>.karyotype.genome.png`. Without `--png` the figures live only inside the HTML; right-click → save to extract one ad hoc.
 
 ## Reference data
 
@@ -15,7 +15,9 @@ All bundled in `molamola/data/`:
 - `exclusion.hg38.bed.gz`, `exclusion.t2t.bed.gz` — karyotype-mode exclusion masks (~5.7 MB / ~6 MB; low-mappability ∪ polymorphic-TR catalog), built from 500 bp runs. A bin is dropped when more than `--mask-overlap` of it is masked. Override with `--mask`, disable with `--no-mask`.
 - `gc_10kb.hg38.bed.gz`, `gc_10kb.t2t.bed.gz` — karyotype-mode 10 kb GC tables (~1.5 MB each) driving the per-1 % GC-bucket median-ratio correction. Override with `--gc`, disable with `--no-gc`.
 
-molamola is bundled-only by design — no auto-download, no online lookups. The bundled-data total is ~15 MB. All bundled refs are reproducibly regeneratable from public sources by running `scripts/derive_karyotype_refs.py`.
+- `genes.hg38.bed.gz`, `genes.t2t.bed.gz` — SV-mode gene tables (~275 kB each) for breakpoint and fusion labels: ~20,000 protein-coding genes plus the IG / TR loci (IGH, IGK, IGL, TRA/TRD, TRB, TRG) as one span each. From NCBI RefSeq annotation release RS_2025_08, which annotates GRCh38 and T2T-CHM13v2.0 natively in one run: the same gene symbols on both builds, and T2T coordinates that are the annotation's own rather than a liftover (they match NASVAR's T2T configuration).
+
+molamola is bundled-only by design — no auto-download, no online lookups. The bundled-data total is ~15.5 MB. All bundled refs are reproducibly regeneratable from public sources by running `scripts/derive_karyotype_refs.py` and `scripts/derive_gene_tables.py`.
 
 ## Circos plot (SV mode)
 
@@ -38,6 +40,19 @@ Keys sit to the right of the disc: the density rings with their per-type event c
 
 Up to v0.6 the report also carried a linear genome map (one row per chromosome with density strips and BND arcs). It was removed: with ~100 arcs on a normal genome crossing 24 rows, an arc's endpoints could not be read, and the circos carries the same density signal.
 
+## Derivative-chromosome panels (SV mode)
+
+One panel per candidate rearrangement, below the circos and numbered as on it (up to 12; any further candidates are counted). Each shows the chromosomes as a cytogeneticist reads a karyotype, G-banded, pter at the top:
+
+- **The normal chromosomes and the derivatives** the junctions build — `8`, `der(8)`, `21`, `der(21)` for a translocation; `16`, `inv(16)` for an inversion; the recipient and donor chromosomes with their derivatives for an insertion. Derivatives are constructed from which side of each breakpoint every junction keeps, oriented so the centromere-bearing chromosome reads pter to qter, and named by the centromere they carry (`der`, `dic` for two, `ace` for none). A paint bar beside each derivative shows which chromosome each segment came from; an arrow marks an inverted segment.
+- **Breakpoints** on the normal chromosomes, labelled with their band and the gene they fall in — or the nearest gene within 500 kb (`near MYC (157 kb)`), since enhancer-hijacking breakpoints often sit well outside the gene they drive. A breakpoint inside an IG / TR locus is named after the locus.
+- **Junctions** on the derivatives, labelled with the fusion they make, written 5'::3' (`RUNX1::RUNX1T1` on der(8), `RUNX1T1::RUNX1` on der(21)). The orientation follows from the kept sides and the gene strands; a junction that puts two genes head to head or tail to tail makes no fusion and is not labelled with one. IG / TR loci are written first (`IGH::CRLF2`). Gene names are annotation only: molamola does not say whether a fusion is recurrent or significant.
+- **The evidence**: junction count (or "1 INV record" when a single record implies both junctions), read support and VAF per junction, and exact coordinates. A candidate promoted by the gene rule (see [Rearrangement tiers](FILTERS.md#rearrangement-tiers-sv-mode)) says so.
+
+![example panel](example_rearrangement_panel.png)
+
+*Synthetic t(8;21) breakpoints placed in RUNX1T1 and RUNX1 — an illustration, not a sample.*
+
 ## Karyotype coverage figure (karyotype mode)
 
 One genome-wide figure, chr1 → chrY left to right:
@@ -56,7 +71,7 @@ The per-chromosome 3 × 8 A4-portrait grid that briefly shipped in v0.3 developm
 
 A single self-contained HTML file (no server, no external CSS/JS, opens offline). Figures are embedded as base64 PNG data URIs. A collapsible run-metadata block at the bottom shows mode-specific provenance:
 
-- **SV mode**: caller, filter mode, baseline coverage, cov-anomaly threshold, BND noise breakdown.
+- **SV mode**: caller, filter mode, baseline coverage, cov-anomaly threshold, BND noise breakdown, and the rearrangement summary.
 - **Karyotype mode**: mosdepth source, reference, inferred genomic sex, mosdepth bin + scatter bin + smooth window, mask / GC source labels, BAF source + het-site count (when `--vcf` given), and the AS-suspected flag.
 
 Designed as a portable review surface — emailable, archivable, no install needed for the reader.
