@@ -5,7 +5,7 @@
 | | | | | | (_) | | (_| | | | | | | (_) | | (_| |     \___..___/
 |_| |_| |_|\___/|_|\__,_|_| |_| |_|\___/|_|\__,_|         ||
 ```
-
+[![install with bioconda](https://img.shields.io/badge/install%20with-bioconda-brightgreen.svg?style=flat)](http://bioconda.github.io/recipes/molamola/README.html)
 A Python cytogenetics plotting tool for Oxford Nanopore data. **One input in, one self-contained HTML report out.** molamola picks between two report types based on its input:
 
 - a VCF with `##INFO=<ID=SVTYPE,...>` → SV / cytogenetics report (long-read SV VCFs from Sniffles2 / cuteSV / SVIM / pbsv / NanoVar): a circos of rearrangements and SV density, and a derivative-chromosome panel for each candidate balanced rearrangement — translocations, inversions, insertions — with breakpoint bands, genes and fusions (`t(8;21)(q21.3;q22.12)  RUNX1::RUNX1T1`);
